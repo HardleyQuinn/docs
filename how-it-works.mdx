@@ -71,7 +71,7 @@ Every `SignedEnvelope` carries a `Kind` field that tells the receiving client ho
 | `0` | `Identity` | Signed **plaintext** directory event (`IdentityAnnouncedEvent`, `KeyPackagePublishedEvent`, device authorization/revocation). The only sanctioned exception to ciphertext-only — peers must be discoverable before any session keys exist. |
 | `1` | `Encrypted` | Domain event encrypted with the channel's AES-256-GCM **RoomKey** (Sender Key model). Used for channel messages, reactions, edits, deletions, and channel creation on non-MLS channels. |
 | `2` | `KeySeal` | RoomKey material sealed 1-on-1 to a single recipient using ECIES (the recipient's X25519 `SealPublicKey`). Addressed to the recipient's inbox stream. Contains `RoomKeyDistributedEvent` or `MlsWelcomeEvent`. |
-| `3` | `Mls` | MLS traffic on a channel stream: both application messages (domain events inside) and handshake commits. The `evil-mls` Rust core distinguishes them. Used for new channels with full MLS group encryption. |
+| `3` | `Mls` | MLS traffic on a channel stream: both application messages (domain events inside) and handshake commits. Your client distinguishes them during MLS processing. Used for new channels with full MLS group encryption. |
 | `4` | `Sealed` | **Sealed-sender** envelope for DMs. The outer envelope is signed by a fresh per-message ephemeral key (`AuthorDid` is that ephemeral key and authenticates no one). The real author DID, their Ed25519 signature, and `PrevEventHash` live inside the ciphertext and are verified post-decrypt. The relay cannot see who sent a DM. |
 
 <Note>

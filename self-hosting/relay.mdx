@@ -1,7 +1,7 @@
 ---
-title: "Run Your Own EvilChat Relay Server"
+title: "Self-Host an EvilChat Relay: Setup and Configuration"
 sidebarTitle: "Relay"
-description: "Set up a self-hosted EvilChat relay: a stateless append-only pipe that stores encrypted envelopes without reading them. Configure PoW, rate limits, and retention."
+description: "Set up a self-hosted EvilChat relay: an append-only pipe that stores encrypted envelopes without reading them. Configure PoW, rate limits, and retention."
 ---
 
 The EvilChat relay is deliberately simple — it accepts signed envelopes, assigns monotonic offsets, and serves bulk sync. It never decrypts, verifies signatures, or evaluates domain logic. Running your own relay means you control who can post to it and where your envelopes land, without any of the privacy trade-offs that come with handing that infrastructure to someone else. Because the relay only performs mechanical checks, self-hosting it is operationally lightweight: no database migrations, no user management, no secrets to rotate.

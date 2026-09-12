@@ -1,7 +1,7 @@
 ---
 title: "EvilChat Identity: Ed25519 Keys, DIDs, and Devices"
 sidebarTitle: "Identity Model"
-description: "EvilChat identity is self-sovereign: your root Ed25519 keypair IS your account. Learn how DIDs work, how device subkeys are authorized, and how revocation is enforced."
+description: "In EvilChat your Ed25519 keypair is your account. Learn how DIDs work, how device subkeys are authorized, and how revocation is enforced client-side."
 ---
 
 In EvilChat there is no server that knows who you are. Your identity is your Ed25519 keypair — `did:evil:<base64url(pubkey)>` — and every message you send is cryptographically signed by your device key. No email address, no phone number, no account creation flow. The keypair is generated on your device on first launch and stored in `profile.json`. Lose the keypair, and you lose access to your identity permanently — there is no recovery flow because there is no central authority to appeal to.

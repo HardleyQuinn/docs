@@ -1,5 +1,5 @@
 ---
-title: "EvilChat Relay API Overview"
+title: "EvilChat Relay API Overview: Wire Format and Endpoints"
 sidebarTitle: "Overview"
 description: "The EvilChat relay exposes three HTTP endpoints: GET /info, POST /events, and GET /events. Learn the wire format and how clients interact with it."
 ---
@@ -14,7 +14,7 @@ The default base URL when running the local demo is:
 http://localhost:5100
 ```
 
-Replace this with your relay's publicly accessible address when operating a production or self-hosted relay. The relay listens on the port configured by `EvilChat:Relay:DbPath` and related settings in `appsettings.json`, or via environment variable overrides in your hosting environment.
+Replace this with your relay's publicly accessible address when operating a production or self-hosted relay. The port and other relay parameters are controlled by `appsettings.json` settings or environment variable overrides in your hosting environment.
 
 ## Authentication
 
@@ -47,45 +47,45 @@ The relay returns a small, predictable set of HTTP error codes on the write path
 
 Every envelope on the relay is a `SignedEnvelope` JSON object. All fields are required on submission. Byte arrays are base64-encoded strings in JSON.
 
-<ParamField body="EventId" type="string (UUID)" required>
+<ParamField body="eventId" type="string (UUID)" required>
   A UUID v4 assigned by the author client. Used as a deduplication key in the vault — not an ordering signal on the relay.
 </ParamField>
 
-<ParamField body="Kind" type="integer (0–4)" required>
+<ParamField body="kind" type="integer (0–4)" required>
   Envelope kind. Controls how the client interprets the payload:
-  - `0` — `Identity`: signed plaintext domain event on the public directory stream
-  - `1` — `Encrypted`: RoomKey (AES-256-GCM Sender Key) encrypted channel message
-  - `2` — `KeySeal`: RoomKey material sealed 1-on-1 to a single recipient's inbox stream
-  - `3` — `Mls`: MLS traffic (TLS-serialised MLS message — application or handshake)
-  - `4` — `Sealed`: Sealed-sender DM; the outer `AuthorDid` is an ephemeral key that authenticates no one — the real author is inside the ciphertext
+  - `0` — `identity`: signed plaintext domain event on the public directory stream
+  - `1` — `encrypted`: RoomKey (AES-256-GCM Sender Key) encrypted channel message
+  - `2` — `keySeal`: RoomKey material sealed 1-on-1 to a single recipient's inbox stream
+  - `3` — `mls`: MLS traffic (TLS-serialised MLS message — application or handshake)
+  - `4` — `sealed`: Sealed-sender DM; the outer `authorDid` is an ephemeral key that authenticates no one — the real author is inside the ciphertext
 </ParamField>
 
-<ParamField body="AuthorDid" type="string" required>
-  The author's DID (`did:evil:<base64url(pubkey)>`). For `Kind: 4` (Sealed), this is an ephemeral per-message key.
+<ParamField body="authorDid" type="string" required>
+  The author's DID (`did:evil:<base64url(pubkey)>`). For `kind: 4` (sealed), this is an ephemeral per-message key.
 </ParamField>
 
-<ParamField body="Timestamp" type="integer (unix seconds)" required>
+<ParamField body="timestamp" type="integer (unix seconds)" required>
   Author-asserted Unix timestamp. Used for display and vault range queries only — never used for ordering on the relay.
 </ParamField>
 
-<ParamField body="StreamId" type="string (UUID)" required>
+<ParamField body="streamId" type="string (UUID)" required>
   Opaque routing key. May be a channel ID, a recipient's inbox stream, a directory stream, or any other logical grouping. The relay stores and returns it as-is without interpretation.
 </ParamField>
 
-<ParamField body="PrevEventHash" type="string (base64)" required>
+<ParamField body="prevEventHash" type="string (base64)" required>
   SHA-256 hash of the previous event in the stream, for optional hash chaining. Zero-filled in v1 (hash chaining deferred).
 </ParamField>
 
-<ParamField body="PowNonce" type="integer (int64)" required>
+<ParamField body="powNonce" type="integer (int64)" required>
   The mined proof-of-work nonce. `0` when PoW is disabled (`powBits = 0`). Mining iterates this field after signing, so changing it never invalidates the signature.
 </ParamField>
 
-<ParamField body="Payload" type="string (base64)" required>
-  The event body. For `Kind: 0` (Identity) this is plaintext domain-event JSON. For all other kinds this is ciphertext. The relay stores and forwards it without inspection.
+<ParamField body="payload" type="string (base64)" required>
+  The event body. For `kind: 0` (identity) this is plaintext domain-event JSON. For all other kinds this is ciphertext. The relay stores and forwards it without inspection.
 </ParamField>
 
-<ParamField body="Signature" type="string (base64)" required>
-  Ed25519 signature over `CanonicalCodec.SignaturePreimage(envelope)`. The relay stores it as opaque bytes; clients verify it after decryption.
+<ParamField body="signature" type="string (base64)" required>
+  Ed25519 signature over the canonical preimage (all header fields except `powNonce`). The relay stores it as opaque bytes; clients verify it after decryption.
 </ParamField>
 
 <Note>

@@ -1,7 +1,7 @@
 ---
-title: "EvilChat Configuration Reference"
+title: "EvilChat Relay, Client, and Vault Configuration Reference"
 sidebarTitle: "Configuration"
-description: "A complete reference for all configuration options in EvilChat: relay server settings, client settings, and evilvault daemon options with their defaults."
+description: "A complete reference for all EvilChat configuration options: relay server settings, client settings, and evilvault daemon options with their defaults."
 ---
 
 EvilChat exposes configuration through ASP.NET Core's standard config system — `appsettings.json` plus environment variables — for the relay, and a `config.json` file plus environment variable overrides for the vault daemon. Both systems follow the same principle: explicit defaults ship with the binary so you only need to specify what you want to change. For containerized or CI deployments, environment variables let you configure everything without touching files on disk.
@@ -78,7 +78,7 @@ The EvilChat client (Blazor web and MAUI) reads its settings from `appsettings.j
 
 ## Vault Daemon Configuration
 
-The vault daemon reads from `~/.config/evilvault/config.json` (macOS/Linux) or `%AppData%\evilvault\config.json` (Windows). Use the `evilvault config` CLI to read and change values without editing the file directly.
+The vault daemon reads its configuration from a platform-specific path: `~/Library/Application Support/evilvault/config.json` on macOS, `~/.config/evilvault/config.json` on Linux, or `%AppData%\evilvault\config.json` on Windows. Use the `evilvault config` CLI to read and change values without editing the file directly.
 
 ### Reading Configuration
 

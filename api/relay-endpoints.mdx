@@ -16,55 +16,55 @@ Submit a signed `SignedEnvelope` to the relay. The relay runs four mechanical ch
 
 A single `SignedEnvelope` JSON object. All fields are required.
 
-<ParamField body="EventId" type="string (UUID)" required>
-  A UUID v4 assigned by the author client. Acts as a deduplication key in the vault (`INSERT OR IGNORE`). Not an ordering signal on the relay.
+<ParamField body="eventId" type="string (UUID)" required>
+  A UUID v4 assigned by the author client. Acts as a deduplication key in the vault. Not an ordering signal on the relay.
 </ParamField>
 
-<ParamField body="Kind" type="integer (0–4)" required>
-  Envelope kind. `0` = Identity (plaintext), `1` = Encrypted (RoomKey), `2` = KeySeal, `3` = Mls, `4` = Sealed (sealed-sender DM).
+<ParamField body="kind" type="integer (0–4)" required>
+  Envelope kind. `0` = identity (plaintext), `1` = encrypted (RoomKey), `2` = keySeal, `3` = mls, `4` = sealed (sealed-sender DM).
 </ParamField>
 
-<ParamField body="AuthorDid" type="string" required>
-  The author's DID string (`did:evil:<base64url(pubkey)>`). For sealed-sender envelopes (`Kind: 4`), this is an ephemeral per-message key that identifies no one.
+<ParamField body="authorDid" type="string" required>
+  The author's DID string (`did:evil:<base64url(pubkey)>`). For sealed-sender envelopes (`kind: 4`), this is an ephemeral per-message key that identifies no one.
 </ParamField>
 
-<ParamField body="Timestamp" type="integer" required>
+<ParamField body="timestamp" type="integer" required>
   Author-asserted Unix timestamp in seconds. The relay stores it as provided; it is used for display and vault range queries only.
 </ParamField>
 
-<ParamField body="StreamId" type="string (UUID)" required>
+<ParamField body="streamId" type="string (UUID)" required>
   Opaque routing key identifying the logical stream (channel, inbox, directory, etc.).
 </ParamField>
 
-<ParamField body="PrevEventHash" type="string (base64)" required>
+<ParamField body="prevEventHash" type="string (base64)" required>
   SHA-256 of the prior envelope in this stream, base64-encoded. Zero-filled (`AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`) in v1.
 </ParamField>
 
-<ParamField body="PowNonce" type="integer (int64)" required>
+<ParamField body="powNonce" type="integer (int64)" required>
   Proof-of-work nonce. Set to `0` when `powBits` is `0` (PoW disabled). When PoW is required, this field is incremented until `SHA256(preimage ‖ signature ‖ nonce)` has at least `powBits` leading zero bits.
 </ParamField>
 
-<ParamField body="Payload" type="string (base64)" required>
-  Event body, base64-encoded. Plaintext domain-event JSON for `Kind: 0`; ciphertext for all other kinds.
+<ParamField body="payload" type="string (base64)" required>
+  Event body, base64-encoded. Plaintext domain-event JSON for `kind: 0`; ciphertext for all other kinds.
 </ParamField>
 
-<ParamField body="Signature" type="string (base64)" required>
-  Ed25519 signature over the canonical preimage (all header fields except `PowNonce`), base64-encoded.
+<ParamField body="signature" type="string (base64)" required>
+  Ed25519 signature over the canonical preimage (all header fields except `powNonce`), base64-encoded.
 </ParamField>
 
 ### Example request
 
 ```json
 {
-  "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
-  "Kind": 0,
-  "AuthorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
-  "Timestamp": 1718000000,
-  "StreamId": "018fde1a-0000-7000-8000-000000000001",
-  "PrevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-  "PowNonce": 0,
-  "Payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
-  "Signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
+  "eventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+  "kind": 0,
+  "authorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
+  "timestamp": 1718000000,
+  "streamId": "018fde1a-0000-7000-8000-000000000001",
+  "prevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "powNonce": 0,
+  "payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
+  "signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
 }
 ```
 
@@ -135,15 +135,15 @@ curl 'http://localhost:5100/events?since=0&limit=10' | jq
     {
       "offset": 1,
       "envelope": {
-        "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
-        "Kind": 0,
-        "AuthorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
-        "Timestamp": 1718000000,
-        "StreamId": "018fde1a-0000-7000-8000-000000000001",
-        "PrevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "PowNonce": 0,
-        "Payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
-        "Signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
+        "eventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+        "kind": 0,
+        "authorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
+        "timestamp": 1718000000,
+        "streamId": "018fde1a-0000-7000-8000-000000000001",
+        "prevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "powNonce": 0,
+        "payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
+        "signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
       }
     }
   ]

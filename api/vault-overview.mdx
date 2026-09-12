@@ -1,7 +1,7 @@
 ---
-title: "evilvault Archive Daemon: Overview"
+title: "evilvault: Self-Hosted EvilChat Archive Daemon Guide"
 sidebarTitle: "Overview"
-description: "evilvault is a self-hosted HTTP daemon that stores your EvilChat history as Storage-Key-encrypted VaultRecords. Learn the architecture and how the client integrates."
+description: "evilvault archives your EvilChat history as Storage-Key-encrypted records only you can read. Learn the architecture, setup, and client integration."
 ---
 
 `evilvault` is a lightweight daemon you run on your own machine or server. The EvilChat client decrypts incoming events using your session keys (RoomKey or MLS), re-encrypts them under your long-term Storage Key (AES-256-GCM), and sends them to the vault — giving you a permanent, tamper-evident archive that the vault itself cannot read. Because only your device ever holds the Storage Key, even a compromised vault host learns nothing about your message history.
@@ -18,7 +18,7 @@ The vault fits into the EvilChat architecture at the archival layer — after en
     The client re-encrypts each decrypted domain event using your Storage Key (a local AES-256-GCM key). A fresh 12-byte random nonce is generated per record. The result is `(nonce ‖ ciphertext+tag)` — the vault stores these two fields but never the plaintext or any key material.
   </Step>
   <Step title="POST /archive">
-    The client sends a batch of `VaultRecord` objects to `POST /archive` on the running vault daemon. The vault performs an `INSERT OR IGNORE` on `eventId`, so re-sending already-archived records is safe and idempotent.
+    The client sends a batch of `VaultRecord` objects to `POST /archive` on the running vault daemon. Submitting a record whose `eventId` already exists in the vault is safe — duplicates are silently skipped, making the operation fully idempotent.
   </Step>
   <Step title="Hydrate history">
     When you open a channel or DM that your vault has archived, the client calls `GET /archive?streamId=<uuid>` to retrieve stored records, decrypts them with the Storage Key, and renders the message history — even if those events have since been purged from the relay.

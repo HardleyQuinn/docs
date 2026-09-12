@@ -4,7 +4,7 @@ sidebarTitle: "Moderation"
 description: "EvilChat moderation works via appended cryptographic events. Channel owners can ban members and grant moderator status; all authority is resolved client-side."
 ---
 
-EvilChat moderation is built on the same append-only event model as messaging — bans and moderator grants are cryptographic facts appended to the relay stream, not mutable rows in a database. The relay knows nothing about them. Every moderation action is a signed event; every authority check is computed locally by the client at the moment you query the member list or load a channel. This means moderation works offline, converges across all clients without coordination, and produces a complete, tamper-evident audit trail.
+EvilChat moderation is built on the same append-only event model as messaging — bans and moderator grants are cryptographic facts appended to the relay stream, not state the relay stores or controls. The relay knows nothing about them. Every moderation action is a signed event; every authority check is computed locally by the client at the moment you query the member list or load a channel. This means moderation works offline, converges across all clients without coordination, and produces a complete, tamper-evident audit trail.
 
 ## Who Can Moderate
 

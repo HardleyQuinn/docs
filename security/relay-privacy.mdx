@@ -1,7 +1,7 @@
 ---
-title: "What Your Relay Can and Cannot See"
+title: "EvilChat Relay Privacy: What Operators Can and Cannot See"
 sidebarTitle: "Relay Privacy"
-description: "EvilChat relays are blind by design: they store opaque ciphertext and enforce only mechanical checks. Learn exactly what metadata a relay operator can observe."
+description: "EvilChat relays store opaque ciphertext and run only mechanical checks. Learn exactly what metadata a relay operator can observe — and what stays hidden."
 ---
 
 One of EvilChat's core design properties is that relays are dumb pipes. A relay operator running `GET /events` sees a stream of ciphertext blobs — not your messages, not your contacts, not who sent what to whom. This is not a policy promise; it is a structural property enforced by the protocol. The relay has no decryption keys, performs no signature verification, and applies no domain logic. This page gives you an honest, precise accounting of what a relay operator can and cannot observe, so you can make an informed decision about which relay to use — or whether to run your own.

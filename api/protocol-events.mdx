@@ -1,7 +1,7 @@
 ---
-title: "EVIL Protocol Domain Events Reference"
+title: "EVIL Protocol Domain Events: Complete Field Reference"
 sidebarTitle: "Domain Events"
-description: "Complete reference for EVIL protocol domain events: IdentityAnnounced, ChannelCreated, MessageSent, MessageEdited, MessageDeleted, MessageReacted, MemberBanned, ModeratorGranted, and more."
+description: "The 13 EVIL protocol domain events: field types, stream assignments, and keyed-maximum convergence rules for edits, reactions, bans, and moderator grants."
 ---
 
 Domain events are the immutable facts that drive all EvilChat state. Every action — sending a message, editing it, banning a member, authorizing a device — produces a new signed event appended to the relay. Clients project these events into local read models; nothing is ever updated in place. Because the relay stores opaque signed envelopes and never executes business logic, all authority checks (who can ban, who is a moderator, whether a device is still valid) happen client-side at projection time, using only the verified chain of events.
@@ -70,7 +70,7 @@ The author's current MLS KeyPackage, consumed by group creators when adding memb
 </ParamField>
 </Accordion>
 
-<Accordion title="MlsWelcomeEvent">
+<Accordion title="MlsWelcome">
 The decrypted payload of a `KeySeal` envelope delivering an MLS Welcome message. It hands the recipient their place in an MLS group and carries enough channel metadata to project the channel UI before any group traffic has decrypted. The outer envelope is addressed to the recipient's inbox stream.
 
 **Stream:** Recipient's inbox stream — `Kind = KeySeal` (sealed 1-on-1 via ECIES)
@@ -197,10 +197,10 @@ A reaction toggle as an appended fact. `Removed = false` adds the emoji; `Remove
 <Accordion title="MemberBanned">
 A ban or unban as an appended fact. The winning state per `(channel, target)` is the `MemberBanned` event (with `Lifted = false` for an active ban, `Lifted = true` for a lifted ban) whose author is the channel owner or an effective moderator **and** that has the highest `(Timestamp, EventId)`. Authority is order-insensitive: even if a moderator-grant event arrives after the ban, the projection re-evaluates and the ban is valid if the granting event's timestamp precedes it.
 
-**Stream:** Channel stream or server-control stream — `Kind = Encrypted`
+**Stream:** Channel stream — `Kind = Encrypted`
 
 <ParamField body="ChannelId" type="string (UUID)" required>
-  The channel scope of the ban. A ban is channel-scoped in v1; server-level bans are a future extension.
+  The channel scope of the ban. Bans are channel-scoped in v1.
 </ParamField>
 
 <ParamField body="BannedDid" type="string" required>

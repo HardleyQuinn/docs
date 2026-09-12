@@ -1,5 +1,5 @@
 ---
-title: "evilvault HTTP API: Archive and Status Endpoints"
+title: "evilvault HTTP API: Archive, Query, and Status Endpoints"
 sidebarTitle: "HTTP API"
 description: "Reference for evilvault's HTTP API: POST /archive (batch upsert), GET /archive (range query), and GET /status. All endpoints require Bearer token auth."
 ---
@@ -22,7 +22,7 @@ Replace `<token>` with the 48-character hex string printed by `evilvault init` o
 
 ## POST /archive
 
-Batch upsert of re-encrypted `VaultRecord` objects. The client sends records it has already decrypted from the relay and re-encrypted under the Storage Key. The vault stores them with `INSERT OR IGNORE` on `eventId`, so submitting duplicates is safe and idempotent.
+Batch upsert of re-encrypted `VaultRecord` objects. The client sends records it has already decrypted from the relay and re-encrypted under the Storage Key. Submitting a record whose `eventId` already exists in the vault is safe — duplicates are silently skipped, making the operation fully idempotent.
 
 ### Request
 
@@ -34,23 +34,23 @@ Content-Type: application/json
 
 The request body is a JSON array of `VaultRecord` objects. Byte-array fields (`Nonce`, `Ciphertext`) are base64-encoded strings.
 
-<ParamField body="EventId" type="string (UUID)" required>
-  The UUID from the original `SignedEnvelope.EventId`. Used as the primary deduplication key — if a record with this ID already exists in the vault, it is silently skipped.
+<ParamField body="eventId" type="string (UUID)" required>
+  The UUID from the original `SignedEnvelope.eventId`. Used as the primary deduplication key — if a record with this ID already exists in the vault, it is silently skipped.
 </ParamField>
 
-<ParamField body="StreamId" type="string (UUID)" required>
+<ParamField body="streamId" type="string (UUID)" required>
   The stream the event belongs to (channel ID, inbox stream, etc.). Used as the partition key for `GET /archive` queries.
 </ParamField>
 
-<ParamField body="Timestamp" type="long (unix seconds)" required>
+<ParamField body="timestamp" type="long (unix seconds)" required>
   Author-asserted Unix timestamp copied from the original envelope. Stored as-is; used only for time-range queries and display — not an ordering guarantee.
 </ParamField>
 
-<ParamField body="Nonce" type="string (base64)" required>
+<ParamField body="nonce" type="string (base64)" required>
   12-byte random AES-256-GCM nonce, base64-encoded. Generated fresh by the client for each record. Never reuse a nonce for the same Storage Key.
 </ParamField>
 
-<ParamField body="Ciphertext" type="string (base64)" required>
+<ParamField body="ciphertext" type="string (base64)" required>
   AES-256-GCM ciphertext plus the 16-byte authentication tag, base64-encoded. The ciphertext covers the decrypted domain-event JSON; the vault stores it without inspection.
 </ParamField>
 
@@ -59,18 +59,18 @@ The request body is a JSON array of `VaultRecord` objects. Byte-array fields (`N
 ```json
 [
   {
-    "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
-    "StreamId": "018fde1a-0000-7000-8000-000000000001",
-    "Timestamp": 1718000000,
-    "Nonce": "dGhpcmlzMTJieXRlcw==",
-    "Ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
+    "eventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+    "streamId": "018fde1a-0000-7000-8000-000000000001",
+    "timestamp": 1718000000,
+    "nonce": "dGhpcmlzMTJieXRlcw==",
+    "ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
   },
   {
-    "EventId": "018fde1b-1111-7b3d-9b2f-5f6d7e9a1b02",
-    "StreamId": "018fde1a-0000-7000-8000-000000000001",
-    "Timestamp": 1718000060,
-    "Nonce": "YW5vdGhlcjEybm9uY2U=",
-    "Ciphertext": "rT7mVp2Yw...base64ciphertext+tag=="
+    "eventId": "018fde1b-1111-7b3d-9b2f-5f6d7e9a1b02",
+    "streamId": "018fde1a-0000-7000-8000-000000000001",
+    "timestamp": 1718000060,
+    "nonce": "YW5vdGhlcjEybm9uY2U=",
+    "ciphertext": "rT7mVp2Yw...base64ciphertext+tag=="
   }
 ]
 ```
@@ -91,7 +91,7 @@ The request body is a JSON array of `VaultRecord` objects. Byte-array fields (`N
 curl -s -X POST http://localhost:5200/archive \
   -H 'Authorization: Bearer <token>' \
   -H 'Content-Type: application/json' \
-  -d '[{"EventId":"018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90","StreamId":"018fde1a-0000-7000-8000-000000000001","Timestamp":1718000000,"Nonce":"dGhpcmlzMTJieXRlcw==","Ciphertext":"4gzQ1XlW9..."}]'
+  -d '[{"eventId":"018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90","streamId":"018fde1a-0000-7000-8000-000000000001","timestamp":1718000000,"nonce":"dGhpcmlzMTJieXRlcw==","ciphertext":"4gzQ1XlW9..."}]'
 ```
 
 ---
@@ -125,11 +125,11 @@ An ordered JSON array of `VaultRecord` objects matching the query. The array is 
 ```json
 [
   {
-    "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
-    "StreamId": "018fde1a-0000-7000-8000-000000000001",
-    "Timestamp": 1718000000,
-    "Nonce": "dGhpcmlzMTJieXRlcw==",
-    "Ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
+    "eventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+    "streamId": "018fde1a-0000-7000-8000-000000000001",
+    "timestamp": 1718000000,
+    "nonce": "dGhpcmlzMTJieXRlcw==",
+    "ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
   }
 ]
 ```

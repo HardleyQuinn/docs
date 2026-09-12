@@ -1,7 +1,7 @@
 ---
-title: "GET /info — Relay Parameters and Capabilities"
+title: "EvilChat Relay GET /info: Parameters and Capabilities"
 sidebarTitle: "GET /info"
-description: "GET /info returns the relay's published parameters: PoW difficulty bits, max envelope size, rate limits, and retention TTL. Clients fetch this before submitting."
+description: "GET /info returns PoW difficulty, max envelope size, per-DID rate limits, and retention TTL. Fetch this endpoint before submitting any envelope."
 ---
 
 Before submitting any envelope, your client should fetch `/info` to learn what the relay requires. The response tells you the proof-of-work difficulty, the maximum envelope size, and the per-DID rate-limit parameters — everything needed to produce an admissible envelope. Because relay operators can change these values at any time, your client should re-fetch `/info` on reconnect rather than caching the response indefinitely.

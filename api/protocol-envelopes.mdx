@@ -1,7 +1,7 @@
 ---
-title: "EVIL Protocol Wire Format: Signed Envelopes"
+title: "EVIL Protocol Signed Envelope Wire Format Reference"
 sidebarTitle: "Envelopes"
-description: "The SignedEnvelope is the only thing that travels the EVIL network. Learn the wire format, envelope kinds, canonical encoding, PoW stamping, and stream routing."
+description: "EVIL protocol SignedEnvelope wire format: fields, envelope kinds, canonical encoding, stream routing, proof-of-work stamping, and sealed-sender layout."
 ---
 
 Every message, key delivery, identity announcement, and moderation event in EvilChat travels as a `SignedEnvelope` — a signed, optionally encrypted wrapper that the relay stores as opaque bytes. The relay never inspects the payload, never decrypts anything, and performs only mechanical admission checks: size, proof-of-work difficulty, and rate limits. All semantic meaning lives inside the envelope and is reconstructed entirely client-side after signature verification and decryption.
@@ -45,7 +45,7 @@ The `SignedEnvelope` record is the single wire type for all protocol traffic. Ev
 </ResponseField>
 
 <ResponseField name="signature" type="string (base64)" required>
-  Ed25519 signature over `CanonicalCodec.SignaturePreimage(envelope)` — the fixed binary encoding of the canonical header fields concatenated with the payload bytes. Verified before any payload is processed. `PowNonce` is excluded from the preimage.
+  Ed25519 signature over the canonical signature preimage — the fixed binary encoding of the canonical header fields concatenated with the payload bytes. Verified before any payload is processed. `PowNonce` is excluded from the preimage.
 </ResponseField>
 
 ---
@@ -72,7 +72,7 @@ The `SignedEnvelope` record is the single wire type for all protocol traffic. Ev
 
 ## Canonical Encoding
 
-JSON serialization is not canonical — field order and whitespace are implementation-defined, so the same logical object can produce different byte sequences in different serializers. Ed25519 signatures and AEAD associated data require a byte-stable input. EvilChat solves this with `CanonicalCodec`, a fixed binary encoding computed as follows:
+JSON serialization is not canonical — field order and whitespace are implementation-defined, so the same logical object can produce different byte sequences in different serializers. Ed25519 signatures and AEAD associated data require a byte-stable input. EvilChat solves this with a fixed binary encoding (the canonical encoding) computed as follows:
 
 **Signature preimage** — the bytes `Ed25519.Sign` covers:
 
@@ -93,7 +93,7 @@ Payload       [4 + N] bytes  (int32-LE length prefix + raw bytes)
 <Tabs>
   <Tab title="Compute signature preimage">
     ```csharp
-    // Pseudo-code matching CanonicalCodec.SignaturePreimage
+    // Signature preimage — canonical header + payload
     var ms = new MemoryStream();
     ms.Write(envelope.EventId.ToByteArray());           // 16 bytes
     ms.WriteByte((byte)envelope.Kind);                  // 1 byte
@@ -108,7 +108,7 @@ Payload       [4 + N] bytes  (int32-LE length prefix + raw bytes)
   </Tab>
   <Tab title="Compute AEAD AAD">
     ```csharp
-    // Pseudo-code matching CanonicalCodec.HeaderAad
+    // AEAD associated data — canonical header only (no payload)
     var ms = new MemoryStream();
     ms.Write(envelope.EventId.ToByteArray());
     ms.WriteByte((byte)envelope.Kind);
@@ -121,6 +121,32 @@ Payload       [4 + N] bytes  (int32-LE length prefix + raw bytes)
     ```
   </Tab>
 </Tabs>
+
+---
+
+## Sealed-Sender Structure
+
+`Kind = Sealed` envelopes use a fresh ephemeral keypair as the outer `AuthorDid` so the relay never learns the real sender. The real author identity is carried inside the decrypted payload as a `SealedInner` record, verified by the recipient after decryption.
+
+<ResponseField name="domainEvent" type="string (base64)" required>
+  The serialized domain-event payload — the same bytes that would appear as `Payload` in a non-sealed envelope. The recipient decrypts and deserializes this to obtain the actual event.
+</ResponseField>
+
+<ResponseField name="authorDeviceDid" type="string" required>
+  The DID of the real sender's device key. The recipient uses this to look up the sender's root identity and verify the inner signature.
+</ResponseField>
+
+<ResponseField name="authorSignature" type="string (base64)" required>
+  Ed25519 signature by `AuthorDeviceDid` over `DomainEvent ‖ PrevEventHash` (the two fields concatenated as raw bytes). Verifying this signature proves the real sender authored this event; the outer ephemeral signature proves only transport integrity.
+</ResponseField>
+
+<ResponseField name="prevEventHash" type="string (base64)" required>
+  The sender's real per-author chain hash, kept private from the relay. Recipients use this to detect gaps in the sealed conversation without exposing the chain metadata to the relay. All-zeros in v1 while hash chaining is reserved.
+</ResponseField>
+
+<Note>
+After decrypting a `Kind = Sealed` envelope, verify that the root DID resolved from `AuthorDeviceDid` matches the `AuthorDid` field inside the decrypted `DomainEvent`. A mismatch indicates a spoofed or malformed inner payload.
+</Note>
 
 ---
 
@@ -140,9 +166,9 @@ Relays store and serve envelopes by `StreamId`. Clients subscribe to stream IDs 
     Per-DID inbox for 1-on-1 `KeySeal` deliveries. Channel owners send `RoomKeyDistributed` envelopes here; group creators send `MlsWelcomeEvent` envelopes here. Derived deterministically from your DID — no coordination needed to know where to deliver sealed messages.
   </Card>
   <Card title="DM Channel Stream" icon="comments">
-    **`SHA256("evilchat-dm-v1:" + sorted(didA, didB))[0:16]`**
+    **`SHA256("evilchat-dm-v1:" + lo + "|" + hi)[0:16]`**
 
-    Deterministic bilateral channel UUID for a 1-on-1 DM. Both participants derive the same UUID independently by sorting their DIDs lexicographically and hashing with the `evilchat-dm-v1:` prefix and a `|` separator. Whoever initiates the conversation first effectively mints the channel.
+    Deterministic bilateral channel UUID for a 1-on-1 DM, where `lo` and `hi` are the two participant DIDs sorted lexicographically (`lo ≤ hi`). Both participants derive the same UUID independently by sorting their DIDs and hashing `"evilchat-dm-v1:{lo}|{hi}"`. Whoever initiates the conversation first effectively mints the channel.
   </Card>
   <Card title="Group Channel Streams" icon="users">
     **Opaque UUIDs minted at creation**
@@ -176,7 +202,7 @@ The hash must have at least `powBits` leading zero bits. The relay verifies this
     Serialize the domain event, encrypt it with the channel RoomKey or MLS secrets, and write it into `Payload`.
   </Step>
   <Step title="Sign the canonical preimage">
-    Compute `CanonicalCodec.SignaturePreimage(envelope)` and produce an Ed25519 `Signature`. The `PowNonce` field is zero at this point.
+    Compute the canonical signature preimage and produce an Ed25519 `Signature`. The `PowNonce` field is zero at this point.
   </Step>
   <Step title="Mine the nonce">
     Iterate `PowNonce` from `0` upward. For each candidate, compute `SHA256(preimage ‖ signature ‖ nonce)` and test whether the leading zero bit count meets `powBits`. The first nonce that satisfies the target is written into the envelope.

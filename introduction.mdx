@@ -28,7 +28,7 @@ Most chat apps trade privacy for convenience: your messages live in plaintext on
     Channel messages are encrypted with an AES-256-GCM RoomKey sealed individually to each member (Sender Key model), or with full MLS group encryption for new channels. The relay sees only ciphertext. Moderation — bans, moderator grants — is enforced client-side at query time.
   </Card>
   <Card title="Vault (Permanent Archive)" icon="database">
-    The optional `evilvault` daemon is a self-hosted CLI + HTTP server that receives Storage-Key-encrypted records from your client and stores them in a local SQLite database. It never holds decryption keys. You control the storage, the token, and the retention policy.
+    The optional `evilvault` daemon is a self-hosted CLI + HTTP server that receives Storage-Key-encrypted records from your client and stores them in a local archive on your machine. It never holds decryption keys. You control the storage, the token, and the retention policy.
   </Card>
 </CardGroup>
 
@@ -51,7 +51,7 @@ Most chat apps trade privacy for convenience: your messages live in plaintext on
     Press **⌘K** (or **Ctrl+K**) anywhere in the app to open the command palette. Create channels, switch conversations, or trigger actions without touching the mouse.
   </Card>
   <Card title="Dark & Light Theme" icon="circle-half-stroke">
-    EvilChat supports both dark and light modes, styled with the in-house Jinx design system. Your preference is stored locally.
+    EvilChat supports both dark and light modes. Your preference is stored locally and applied immediately — no account setting to sync.
   </Card>
 </CardGroup>
 
@@ -61,4 +61,4 @@ Most chat apps trade privacy for convenience: your messages live in plaintext on
   **EVIL** stands for **Event Verified Immutable Ledger**. The protocol defines the wire format (`SignedEnvelope`), the five envelope kinds, the proof-of-work stamp, the canonical signature preimage, and the set of architecture rules every compliant client and relay must follow. The core rules are: relays run zero business logic; signatures are verified before decryption; out-of-order ciphertext is parked and replayed when keys arrive; cursors advance by relay offset, never by author-asserted timestamps; and the Vault archives Storage-Key-encrypted plaintext, never transient network ciphertext. These rules together guarantee that the event log is an authoritative, tamper-evident source of truth that any client can independently project.
 </Note>
 
-The full EVIL stack in EvilChat includes Ed25519 device-subkey identity (the root key signs only device authority delegations), MLS group encryption via the Rust `evil-mls` core (bans cryptographically eject members at the MLS layer), sealed-sender DMs, PoW conformance, per-author hash chaining with gap detection, and the self-hostable `evilvault` archive daemon with hydration support.
+The full EVIL stack in EvilChat includes Ed25519 device-subkey identity, full MLS group encryption for new channels (bans cryptographically eject members at the protocol layer), sealed-sender DMs, proof-of-work relay conformance, per-author event chaining with gap detection, and the self-hostable `evilvault` archive daemon with hydration support.

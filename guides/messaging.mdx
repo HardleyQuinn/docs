@@ -1,5 +1,5 @@
 ---
-title: "Sending, Editing, and Reacting to Messages"
+title: "Sending, Editing, Deleting, and Reacting to Messages"
 sidebarTitle: "Messaging"
 description: "Learn how to send, edit, delete, and react to messages in EvilChat. All operations are append-only events — edits and deletions are cryptographically auditable."
 ---
@@ -12,7 +12,7 @@ Type your message in the **compose box** at the bottom of the chat window and pr
 
 1. Encrypts the `MessageSentEvent` payload with the channel's RoomKey (or via MLS).
 2. Signs the resulting `SignedEnvelope` with your device Ed25519 key.
-3. Posts the envelope to the relay's `POST /events` endpoint.
+3. Publishes the envelope to the relay.
 4. Displays the message optimistically in your UI while waiting for relay confirmation.
 
 Messages support standard Unicode including emoji. There is no enforced length limit beyond the relay's 64 KiB maximum envelope size.
@@ -67,7 +67,7 @@ Reactions let you respond to any message with an emoji, without sending a full r
     Hover over a message and click the **smiley face** (😊) icon that appears on the right. The reaction picker opens.
   </Step>
   <Step title="Choose an emoji">
-    Six quick-access emoji are shown immediately. To find something specific, click **All** to open the full searchable grid of approximately **1,500 CLDR emoji**, browsable by category or by typing a search term.
+    Six quick-access emoji are shown immediately. To find something specific, click **All** to open the full searchable grid of approximately **1,900 CLDR emoji**, browsable by category or by typing a search term.
   </Step>
   <Step title="Toggle a reaction off">
     Click an existing reaction badge below a message to remove your reaction. This appends a `MessageReactedEvent` with `Removed: true`.

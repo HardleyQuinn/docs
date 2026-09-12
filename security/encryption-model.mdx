@@ -1,5 +1,5 @@
 ---
-title: "EvilChat Encryption: Channels, DMs, and the Vault"
+title: "EvilChat Encryption Model: Channels, DMs, and Vault"
 sidebarTitle: "Encryption Model"
 description: "A deep dive into how EvilChat encrypts messages: RoomKey channels, MLS group encryption, sealed-sender DMs, ECIES key delivery, and vault re-encryption."
 ---
@@ -45,9 +45,9 @@ RoomKeys and MLS Welcome messages are delivered one-on-one using **ECIES** (Elli
 
 1. The sender generates a fresh **ephemeral X25519 keypair**.
 2. A shared secret is derived via **X25519 Diffie-Hellman** between the ephemeral private key and the recipient's **seal public key** (the `SealPublicKey` from their `IdentityAnnounced` event).
-3. The shared secret is expanded through **HKDF-SHA-256** to produce an AES-256-GCM key and nonce.
+3. The shared secret is expanded through **HKDF-SHA-256** (salt = ephemeral public key ‖ recipient public key) to produce a 32-byte **AES-256-GCM key**. A separate random 12-byte nonce is generated for each seal.
 4. The payload (RoomKey bytes or MLS Welcome) is encrypted with AES-256-GCM.
-5. The ephemeral public key is prepended to the ciphertext so the recipient can re-derive the shared secret.
+5. The sealed box is laid out as `ephemeralPub(32) ‖ nonce(12) ‖ ciphertext+tag` so the recipient can re-derive the shared secret from the leading bytes.
 
 Only the holder of the recipient's Ed25519 identity key (which controls the corresponding X25519 key) can open the box. These envelopes use `Kind = KeySeal` and are addressed to the recipient's **inbox stream** — an opaque stream ID derived from their DID that other users can post to but only the recipient reads.
 
@@ -69,7 +69,7 @@ Envelopes of `Kind = Sealed` trigger this path. The DM channel itself is a deter
 When the vault daemon archives events, the client performs a second layer of encryption specifically for long-term storage:
 
 1. The client decrypts the incoming relay envelope using the appropriate session key (RoomKey or MLS epoch key).
-2. It immediately re-encrypts the plaintext event under your **Storage Key** — a 256-bit AES-256-GCM key derived from your device and never transmitted anywhere.
+2. It immediately re-encrypts the plaintext event under your **Storage Key** — a 256-bit AES-256-GCM key generated at initialization, stored only in your local `profile.json`, and never transmitted anywhere.
 3. The `nonce ‖ ciphertext+tag` blob is posted to the vault's `POST /archive` endpoint.
 
 The vault stores only `(streamId, timestamp, nonce, ciphertext)` tuples. It never receives plaintext and never holds any key material. Even if your vault database is exfiltrated, the data is meaningless without your Storage Key.
