@@ -43,7 +43,7 @@ On first launch, the client posts an `IdentityAnnounced` event to the public dir
 |---|---|
 | `AuthorDid` | Your root DID |
 | `DisplayName` | Your chosen display name |
-| `SealPublicKey` | Your X25519 public key — the key others use to seal RoomKeys and MLS Welcomes to you |
+| `SealPublicKey` | Your X25519 public key — the key others use to seal MLS Welcomes to you |
 | `Accent` | Optional display accent color (`cyan`, `magenta`, `green`, `violet`, `blue`). `null` means clients derive a stable color from your DID. |
 
 Re-announcing updates your profile. The directory projection upserts by DID using the latest-wins rule — the `IdentityAnnounced` event with the highest `(Timestamp, EventId)` is the canonical profile for your DID.

@@ -42,8 +42,16 @@
             "group": "Security",
             "pages": [
               "security/encryption-model",
+              "security/sealed-mode",
               "security/identity-model",
               "security/relay-privacy"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/building",
+              "development/architecture"
             ]
           }
         ]

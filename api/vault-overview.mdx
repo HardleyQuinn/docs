@@ -4,7 +4,7 @@ sidebarTitle: "Overview"
 description: "evilvault archives your EvilChat history as Storage-Key-encrypted records only you can read. Learn the architecture, setup, and client integration."
 ---
 
-`evilvault` is a lightweight daemon you run on your own machine or server. The EvilChat client decrypts incoming events using your session keys (RoomKey or MLS), re-encrypts them under your long-term Storage Key (AES-256-GCM), and sends them to the vault — giving you a permanent, tamper-evident archive that the vault itself cannot read. Because only your device ever holds the Storage Key, even a compromised vault host learns nothing about your message history.
+`evilvault` is a lightweight daemon you run on your own machine or server. The EvilChat client decrypts incoming events using your MLS group keys, re-encrypts them under your long-term Storage Key (AES-256-GCM), and sends them to the vault — giving you a permanent, tamper-evident archive that the vault itself cannot read. Because only your device ever holds the Storage Key, even a compromised vault host learns nothing about your message history.
 
 ## How It Works
 
@@ -12,7 +12,7 @@ The vault fits into the EvilChat architecture at the archival layer — after en
 
 <Steps>
   <Step title="Receive and decrypt">
-    The EvilChat client polls the relay and collects signed envelopes for your streams. Encrypted envelopes (`Kind: 1–4`) are decrypted locally using the appropriate session key: a RoomKey for channel messages, your MLS group state for MLS traffic, or your private key for key-sealed DMs.
+    The EvilChat client polls the relay and collects signed envelopes for your streams. Encrypted envelopes (`Kind: 1–4`) are decrypted locally using the appropriate key material: your MLS group state for channel and DM traffic, your seal key for KeySeal deliveries, or a stored legacy RoomKey for historical ciphertext.
   </Step>
   <Step title="Re-encrypt under Storage Key">
     The client re-encrypts each decrypted domain event using your Storage Key (a local AES-256-GCM key). A fresh 12-byte random nonce is generated per record. The result is `(nonce ‖ ciphertext+tag)` — the vault stores these two fields but never the plaintext or any key material.

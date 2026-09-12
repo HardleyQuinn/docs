@@ -1,0 +1,73 @@
+---
+title: "EvilChat Architecture: Constraints and Structure"
+sidebarTitle: "Architecture"
+description: "The six protocol constraints every change must satisfy, the vertical-slice client structure, the inbound event pipeline, and the Rust/C# crypto boundary."
+---
+
+EvilChat is built against six non-negotiable protocol constraints. They are invariants, not preferences: a feature that violates one is redesigned until it does not. Understanding them explains most of the codebase's shape.
+
+## The six constraints
+
+<AccordionGroup>
+  <Accordion title="1. The network is a dumb pipe">
+    Relays execute zero business logic and keep no relational state. They are message brokers for encrypted, append-only event streams. The only relay-side checks permitted are mechanical — computable from envelope bytes alone: proof-of-work difficulty (per kind), per-DID rate limiting for non-sealed envelopes, size caps, retention TTL, and an envelope-hash blocklist. Anything requiring domain knowledge — membership, permissions, content — is business logic and forbidden. Every feature, including bans and deletions, is an appended event plus a client-side projection, never a server endpoint.
+  </Accordion>
+  <Accordion title="2. Cryptographic identity">
+    A user is an Ed25519 keypair. The root key's public half is the DID; the root private key stays offline and signs only identity-stream events (device authorizations, revocations). Everyday envelopes are signed by device subkeys, resolved to the root through a local identity projection. The identity stream also hosts key-establishment material — MLS KeyPackages, published as signed plaintext.
+  </Accordion>
+  <Accordion title="3. The Vault vs. the edge">
+    The Vault is a self-hosted master store holding the permanent history of the user's events, re-encrypted under a single Storage Key — never raw network envelopes, which forward secrecy makes undecryptable by design. The edge client keeps lightweight snapshots, prunes aggressively, and hydrates older history from the Vault on demand.
+  </Accordion>
+  <Accordion title="4. Event sourcing and CQRS">
+    State is never mutated directly: everything is an immutable event, pulled from the relay firehose, verified, decrypted, and dispatched through a mediator into read-optimized SQLite projections. Projections must converge — events arrive in different orders on different clients, so every fold is order-insensitive (tombstones persist before their target arrives) and conflicts resolve by deterministic keyed-maximum. Two honest clients holding the same event set reach identical state.
+  </Accordion>
+  <Accordion title="5. End-to-end encryption (MLS everywhere)">
+    All group and DM encryption is MLS (RFC 9420) through the Rust `evil-mls` core. DMs are two-member MLS groups — chosen over Double Ratchet to keep one audited crypto stack. Handshake traffic rides the existing event model: commits on channel streams, Welcomes sealed 1-on-1, KeyPackages on the identity stream. Never hand-roll group keying and never reimplement MLS in managed code.
+  </Accordion>
+  <Accordion title="6. Metadata privacy">
+    Clients never query relays for specific entities — the only read is bulk chronological sync, so relays cannot observe read habits. On the write side, sealed mode (always for DMs, opt-in per channel) hides authorship behind ephemeral signers and stream identity behind rotating epoch tags. The honest residual: timing, frequency, and size correlation remain visible; padding is an open design area.
+  </Accordion>
+</AccordionGroup>
+
+## Vertical slices
+
+The client is organized by feature, not by layer. Each slice under `EvilChat.Client/Features/` owns its commands, handlers, projections, and repositories:
+
+```
+Features/
+  Identity/        announce, devices, KeyPackage publication, directory projection
+  Channels/        create, membership (MLS add/remove), migration, ratchet, projections
+  DirectMessages/  open-DM flow
+  Messaging/       send, edit, delete, react + message projections
+  Moderation/      bans, moderator grants, query-time authority
+Infrastructure/
+  Crypto/          signing, sealed sender, PoW stamping; Mls/ holds the native binding
+  Sync/            the inbound pump, chain service, relay client, outbox
+  Persistence/     SQLite read models and snapshots
+  Vault/           local archive, replication, hydration
+```
+
+Handlers communicate through a mediator; no slice calls another slice's internals.
+
+## The inbound pipeline
+
+Every envelope a client syncs passes through one path — `InboundEventPump`:
+
+1. **Verify** the outer Ed25519 signature (for sealed envelopes this only proves integrity — the signer is ephemeral).
+2. **Resolve** the stream: a sealed envelope's `StreamId` is looked up in the epoch-tag registry; standard envelopes use it directly.
+3. **Decrypt** through the appropriate path: MLS for group traffic, the sealed path for `Kind = Sealed`, legacy RoomKey decrypt-only for historical ciphertext.
+4. **Bind** the claimed author: the verified signer (outer, or inner for sealed) must resolve through the device projection to the payload's root `AuthorDid`. Unknown device? Park and replay when its authorization syncs. Revoked? Drop.
+5. **Dispatch** the domain event to projections via the mediator.
+
+The governing discipline is **park, don't drop**: ciphertext that cannot be processed yet — missing Welcome, unresolvable stream tag, unknown device — is stored and replayed when the missing material lands. Relays may expire envelopes, so nothing is ever assumed re-fetchable.
+
+## The Rust/C# boundary
+
+All MLS state and key material live on the Rust side of `rust/evil-mls`; C# holds opaque handles and sees only ciphertext and public material. The boundary rules:
+
+- **No panics cross the boundary.** Every export wraps its body in `catch_unwind`; errors travel as codes plus a thread-local message.
+- **Bytes in, bytes out.** TLS-serialized MLS messages, UTF-8 DIDs, opaque handles. No shared structs, no callbacks into C#.
+- **Explicit lifetimes.** Handles are wrapped in `SafeHandle` so the GC can neither leak nor double-free; every allocation returned by Rust has exactly one free function.
+- **Secrets never enter managed memory.** The garbage collector copies and compacts heaps, making zeroization impossible in C# — private keys and epoch secrets exist only Rust-side, zeroized on drop.
+- **Versions must match.** The binding asserts the core's version string at startup and refuses to run on a mismatch; skew between binding and binary is treated as a corruption risk, not a warning.
+- **State persists synchronously** after every mutating call — including plain encryption, because encrypting advances the sender ratchet, and replaying stale ratchet state would reuse keys and nonces.

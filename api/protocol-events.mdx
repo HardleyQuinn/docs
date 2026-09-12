@@ -7,7 +7,7 @@ description: "The 13 EVIL protocol domain events: field types, stream assignment
 Domain events are the immutable facts that drive all EvilChat state. Every action — sending a message, editing it, banning a member, authorizing a device — produces a new signed event appended to the relay. Clients project these events into local read models; nothing is ever updated in place. Because the relay stores opaque signed envelopes and never executes business logic, all authority checks (who can ban, who is a moderator, whether a device is still valid) happen client-side at projection time, using only the verified chain of events.
 
 <Note>
-Every domain event implements `IDomainEvent`, which carries three shared fields: `EventId` (a UUID uniquely identifying this fact), `AuthorDid` (the DID of the event's claimed author), and `Timestamp` (unix seconds, author-asserted). **Always verify `AuthorDid` against the outer envelope's verified signer before dispatch** — any RoomKey holder can forge payload fields, including `AuthorDid`. The outer `SignedEnvelope.AuthorDid` is the ground truth; the payload field is a convenience copy.
+Every domain event implements `IDomainEvent`, which carries three shared fields: `EventId` (a UUID uniquely identifying this fact), `AuthorDid` (the DID of the event's claimed author), and `Timestamp` (unix seconds, author-asserted). **Always verify `AuthorDid` against the envelope's verified signer before dispatch** — any group member can forge payload fields, including `AuthorDid`. The verified signer (the envelope signature for standard kinds, the inner `SealedInner` signature for sealed ones) is the ground truth; the payload field is a convenience copy.
 </Note>
 
 ## Event Catalog
@@ -24,7 +24,7 @@ A peer's public identity record. Broadcasting this event is how a DID becomes di
 </ParamField>
 
 <ParamField body="SealPublicKey" type="string (base64)" required>
-  The author's X25519 public key. Channel owners encrypt RoomKeys and group creators seal MLS Welcomes to this key via ECIES. Rotate it by re-announcing with a new key — pending sealed deliveries to the old key will fail to decrypt.
+  The author's X25519 public key. Group creators seal MLS Welcomes to this key via ECIES. Rotate it by re-announcing with a new key — pending sealed deliveries to the old key will fail to decrypt.
 </ParamField>
 
 <ParamField body="Accent" type="string | null">
@@ -94,12 +94,16 @@ The decrypted payload of a `KeySeal` envelope delivering an MLS Welcome message.
 <ParamField body="Peers" type="string[] | null">
   The DIDs of the other participants in a DM channel. `null` for regular group channels.
 </ParamField>
+
+<ParamField body="Sealed" type="boolean">
+  `true` if the channel runs in sealed mode — its traffic rides `Kind = Sealed` envelopes under rotating epoch tags. Joiners must record the joined epoch's tag to resolve inbound traffic. DMs are sealed regardless of this flag.
+</ParamField>
 </Accordion>
 
 <Accordion title="ChannelCreated">
-The founding event for a channel, written to the channel's own stream by its creator. This is the authoritative record of the channel's name, whether it is a DM, and whether it uses MLS or classic RoomKey encryption.
+The founding event for a channel, written by its creator. This is the authoritative record of the channel's name, whether it is a DM, and whether it runs in sealed mode. Members joining later usually cannot decrypt it (it predates their epoch) — they project the channel from their `MlsWelcome` instead.
 
-**Stream:** Channel stream — `Kind = Encrypted` (or `Kind = Mls`)
+**Stream:** Channel stream — `Kind = Mls` for standard channels; `Kind = Sealed` (under the creation epoch's tag) for DMs and sealed channels; historical channels used `Kind = Encrypted`
 
 <ParamField body="ChannelId" type="string (UUID)" required>
   The opaque UUID identifying this channel. For DMs this is the deterministic bilateral UUID; for group channels it is minted at creation time.
@@ -118,14 +122,18 @@ The founding event for a channel, written to the channel's own stream by its cre
 </ParamField>
 
 <ParamField body="Mls" type="boolean">
-  `true` if the channel uses MLS group encryption; `false` (or absent) for classic RoomKey (AES-256-GCM) encryption.
+  Always `true` for newly created channels — MLS is the only group scheme. `false` on historical events identifies a RoomKey-era channel (since migrated).
+</ParamField>
+
+<ParamField body="Sealed" type="boolean">
+  The sealed-mode policy flag: `true` routes all of the channel's traffic through ephemeral-signed sealed envelopes under rotating epoch tags. Absent or `false` on standard channels.
 </ParamField>
 </Accordion>
 
 <Accordion title="MessageSent">
-A chat message posted to a channel. By the time this event reaches your projection, `Body` is already decrypted — either from the channel RoomKey (AES-256-GCM) or from MLS group secrets. The relay only ever stores the ciphertext.
+A chat message posted to a channel. By the time this event reaches your projection, `Body` is already decrypted through the channel's MLS group (or a legacy RoomKey for historical ciphertext). The relay only ever stores the ciphertext.
 
-**Stream:** Channel stream — `Kind = Encrypted` or `Kind = Mls`
+**Stream:** Channel stream — `Kind = Mls` (standard channels) or `Kind = Sealed` (DMs and sealed channels); historical messages used `Kind = Encrypted`
 
 <ParamField body="ChannelId" type="string (UUID)" required>
   The channel this message belongs to. Projections use this to route the event to the correct conversation view.
@@ -230,13 +238,13 @@ A moderator grant or revocation. Only events authored by the channel owner count
 </ParamField>
 </Accordion>
 
-<Accordion title="RoomKeyDistributed">
-The decrypted payload of a `KeySeal` envelope delivering a channel RoomKey. The channel owner sends one of these 1-on-1 to each member via their inbox stream, sealing each copy to the recipient's `SealPublicKey`. Once you decrypt this event, you hold the AES-256-GCM key needed to decrypt all `Kind = Encrypted` messages on the channel stream.
+<Accordion title="RoomKeyDistributed (legacy, receive-only)">
+**Retired.** No client sends this event anymore — MLS Welcomes replaced RoomKey distribution wholesale. Clients still process inbound copies (from old relay history or vault replay) so RoomKey-era ciphertext stays decryptable: decrypting one yields the AES-256-GCM key for the channel's historical `Kind = Encrypted` messages, stored for decryption only.
 
 **Stream:** Recipient's inbox stream — `Kind = KeySeal` (sealed 1-on-1 via ECIES)
 
 <ParamField body="ChannelId" type="string (UUID)" required>
-  The channel whose RoomKey is being distributed.
+  The channel whose legacy RoomKey this event carried.
 </ParamField>
 
 <ParamField body="ChannelName" type="string" required>
@@ -248,7 +256,7 @@ The decrypted payload of a `KeySeal` envelope delivering a channel RoomKey. The 
 </ParamField>
 
 <ParamField body="Epoch" type="integer" required>
-  Key epoch number. Fixed at `0` in v1 — key rotation is deferred to MLS channels. Future versions will increment this when the RoomKey is rotated.
+  Key epoch number. Always `0` — RoomKeys were static and never rotated, which is one of the reasons the scheme was retired in favor of MLS.
 </ParamField>
 
 <ParamField body="IsDirect" type="boolean">
@@ -287,8 +295,8 @@ Never sort channel messages by `Timestamp` for ordering purposes — use relay o
 Because the relay is a dumb pipe and does not guarantee delivery ordering, some events can arrive before the context needed to process them exists. Clients must park these events and replay them when the prerequisite arrives.
 
 <CardGroup cols={2}>
-  <Card title="Encrypted messages before RoomKey" icon="key">
-    If a `Kind = Encrypted` channel message arrives before the `RoomKeyDistributed` event for that channel lands in your inbox, store the ciphertext. When the RoomKey eventually arrives, replay all parked ciphertexts for that `(ChannelId, Epoch)`.
+  <Card title="Ciphertext before key material" icon="key">
+    A channel message can arrive before your `MlsWelcome` does — or, in a sealed conversation, under an epoch tag you cannot resolve yet. Store the ciphertext and replay it the moment the Welcome joins you to the group (which also records the epoch's tag). The same rule covers legacy `Encrypted` messages arriving before their `RoomKeyDistributed`.
   </Card>
   <Card title="Tombstones before the target" icon="trash">
     A `MessageDeleted` tombstone may arrive before its `MessageSent` event. Persist the tombstone so that when the `MessageSent` eventually arrives, the projection immediately marks it deleted without resurrection.
@@ -302,5 +310,5 @@ Because the relay is a dumb pipe and does not guarantee delivery ordering, some 
 </CardGroup>
 
 <Tip>
-A practical parking strategy is a simple dictionary keyed on the missing prerequisite (e.g., `RoomKey` by `(ChannelId, Epoch)`, or `MessageId` for tombstones and reactions). When the prerequisite materializes, drain the parked queue for that key before continuing normal event processing.
+A practical parking strategy is a simple dictionary keyed on the missing prerequisite (e.g., the channel or stream tag for undecryptable ciphertext, or `MessageId` for tombstones and reactions). When the prerequisite materializes, drain the parked queue for that key before continuing normal event processing.
 </Tip>

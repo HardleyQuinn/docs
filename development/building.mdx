@@ -1,0 +1,66 @@
+---
+title: "Building EvilChat from Source"
+sidebarTitle: "Building"
+description: "Set up a development environment for EvilChat: the .NET solution, the evil-mls Rust core, the Aspire demo, and the test suite."
+---
+
+EvilChat is a .NET solution with one native dependency: the `evil-mls` Rust crate that implements all MLS cryptography. This page takes you from a fresh clone to a running two-user demo and a green test suite.
+
+## Prerequisites
+
+| Tool | Version | Purpose |
+|---|---|---|
+| .NET SDK | 10.0 or later | The relay, client, vault, and tests |
+| Rust toolchain | Any recent stable ([rustup](https://rustup.rs)) | The `evil-mls` crypto core |
+
+## Build the native core first
+
+All encryption runs through `evil-mls`, a Rust crate wrapping [OpenMLS](https://github.com/openmls/openmls) behind a C ABI. The client refuses to start without it — there is no managed fallback cipher, by design.
+
+```bash
+cargo build --release --manifest-path rust/evil-mls/Cargo.toml
+```
+
+The .NET build copies the resulting library (`libevil_mls.dylib` / `libevil_mls.so` / `evil_mls.dll`) into output directories automatically. Rebuild it whenever `rust/evil-mls` changes; the C# binding asserts the core's version string at startup and refuses to run against a mismatched binary.
+
+## Build and run
+
+```bash
+dotnet build EvilChat.slnx
+dotnet run --project EvilChat.AppHost
+```
+
+The Aspire dashboard opens with three resources: the relay on port 5100 and two independent clients (Alice on 5101, Bob on 5102). See the [quickstart](/quickstart) for the guided demo walkthrough.
+
+Every client instance keeps its state under `.data/` (gitignored). Delete that directory for a fresh world with new identities.
+
+## Run the tests
+
+```bash
+dotnet test EvilChat.Tests
+```
+
+The suite runs entirely in-process: multiple full client stacks share an in-memory relay and pump events until the network quiesces, so convergence is tested the way production reaches it — through the real sync loop, the real crypto, and the real native core. Tests that need `evil-mls` skip with a clear message if the library has not been built.
+
+Two harness patterns worth knowing before you add tests:
+
+- **The shared-relay harness** builds complete clients via the production dependency-injection setup, swapping only the HTTP transport for an in-memory log. `SyncAllAsync` flushes every client's outbox and pumps every client repeatedly until a round produces nothing new.
+- **Legacy wire fabricators** (`EvilChat.Tests/LegacyRoomKey.cs`) reproduce retired wire formats byte for byte, because production code can no longer write them but decrypt-only support still needs end-to-end coverage.
+
+## Project layout
+
+```
+EvilChat.Relay            the dumb pipe: POST /events, GET /events?since= — nothing else
+EvilChat.Protocol         wire contracts: SignedEnvelope, domain events, canonical codec, PoW
+EvilChat.Client           the entire edge client (Razor class library)
+  Features/               vertical slices: Identity, Channels, DirectMessages, Messaging, Moderation
+  Infrastructure/         Mediation, Crypto (incl. the Mls binding), Sync, Persistence, Vault
+  Components/             Jinx-styled UI
+EvilChat.Web              Blazor Server head (what the AppHost runs, twice)
+EvilChat.Vault            the evilvault daemon + CLI
+EvilChat.AppHost          Aspire orchestration: relay + alice + bob
+EvilChat.Tests            crypto round-trips, FFI binding tests, pipeline convergence tests
+rust/evil-mls             the MLS core: OpenMLS behind a C ABI
+```
+
+See [Architecture](/development/architecture) for the constraints that shape this layout and the rules for working on the Rust/C# boundary.

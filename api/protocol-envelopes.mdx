@@ -55,17 +55,17 @@ The `SignedEnvelope` record is the single wire type for all protocol traffic. Ev
 | Value | Name | Payload | Used for |
 |-------|------|---------|----------|
 | `0` | `Identity` | Plaintext domain-event JSON | Signed-plaintext events on the public directory stream — the sanctioned exception to ciphertext-only, required so peers can be verified before any session keys exist |
-| `1` | `Encrypted` | AES-256-GCM ciphertext (RoomKey) | Channel messages, edits, deletions, reactions, bans, and moderator grants in classic RoomKey channels |
-| `2` | `KeySeal` | ECIES-sealed ciphertext | RoomKey material (`RoomKeyDistributed`) and MLS Welcomes (`MlsWelcomeEvent`) addressed to a single recipient's inbox stream |
-| `3` | `Mls` | TLS-serialized MLS message | Application messages and handshake commits on MLS channels; the MLS stack distinguishes them internally |
-| `4` | `Sealed` | Sealed-sender ciphertext | Direct messages where the relay must not learn the real sender's identity |
+| `1` | `Encrypted` | AES-256-GCM ciphertext (RoomKey) | **Retired — decrypt-only.** Historical traffic from RoomKey-era channels; nothing produces this kind anymore |
+| `2` | `KeySeal` | ECIES-sealed ciphertext | MLS Welcomes (`MlsWelcomeEvent`) addressed to a single recipient's inbox stream. Legacy `RoomKeyDistributed` events are still accepted for decrypt-only key recovery |
+| `3` | `Mls` | TLS-serialized MLS message | Application messages and handshake commits on standard (non-sealed) channels; the MLS stack distinguishes them internally |
+| `4` | `Sealed` | MLS ciphertext under an ephemeral outer signer | All DM traffic and all traffic of sealed channels — messages, creation events, and membership commits alike |
 
 <Note>
-**Kind = Sealed** envelopes use a fresh ephemeral Ed25519 keypair as `authorDid` for every message. The relay sees the ephemeral key, not your real DID. Your true DID, your inner signature, and your `PrevEventHash` live inside the ciphertext (in the `SealedInner` structure) and are verified only by the recipient after decryption. This is EvilChat's sealed-sender design for DMs.
+**Kind = Sealed** envelopes use a fresh ephemeral Ed25519 keypair as `authorDid` for every message, and their `streamId` is a **rotating epoch tag** — 16 bytes exported from the conversation's MLS epoch secret (label `evil-stream-tag-v1`) rather than a stable channel ID. The relay sees a key it will never see again writing to an address that stops existing at the next epoch. Your true DID, your inner signature, and your `PrevEventHash` live inside the ciphertext (in the `SealedInner` structure) and are verified only by the recipient after decryption. Members record each epoch's tag as the group advances (tags cannot be re-derived for past epochs) and resolve inbound envelopes through that registry; historical sealed envelopes addressed to real channel IDs still resolve through the legacy path.
 </Note>
 
 <Info>
-**Kind = Identity** envelopes are the only plaintext events in the protocol. They are necessary because RoomKey and MLS encryption require knowing a peer's `SealPublicKey` before any secure channel can be established — you need a way to look up keys before you have keys. The directory stream is the bootstrap layer that makes E2EE discoverable.
+**Kind = Identity** envelopes are the only plaintext events in the protocol. They are necessary because MLS group establishment requires knowing a peer's `SealPublicKey` and KeyPackage before any secure channel exists — you need a way to look up keys before you have keys. The directory stream is the bootstrap layer that makes E2EE discoverable.
 </Info>
 
 ---
@@ -163,29 +163,29 @@ Relays store and serve envelopes by `StreamId`. Clients subscribe to stream IDs 
   <Card title="Inbox Stream" icon="envelope">
     **`SHA256("evilchat-inbox-v1:" + did)[0:16]`**
 
-    Per-DID inbox for 1-on-1 `KeySeal` deliveries. Channel owners send `RoomKeyDistributed` envelopes here; group creators send `MlsWelcomeEvent` envelopes here. Derived deterministically from your DID — no coordination needed to know where to deliver sealed messages.
+    Per-DID inbox for 1-on-1 `KeySeal` deliveries — MLS Welcomes (`MlsWelcomeEvent`) that hand you your place in a group. Derived deterministically from your DID, so no coordination is needed to know where to deliver them. (Legacy `RoomKeyDistributed` envelopes also arrived here.)
   </Card>
   <Card title="DM Channel Stream" icon="comments">
     **`SHA256("evilchat-dm-v1:" + lo + "|" + hi)[0:16]`**
 
-    Deterministic bilateral channel UUID for a 1-on-1 DM, where `lo` and `hi` are the two participant DIDs sorted lexicographically (`lo ≤ hi`). Both participants derive the same UUID independently by sorting their DIDs and hashing `"evilchat-dm-v1:{lo}|{hi}"`. Whoever initiates the conversation first effectively mints the channel.
+    Deterministic bilateral channel UUID for a 1-on-1 DM, where `lo` and `hi` are the two participant DIDs sorted lexicographically (`lo ≤ hi`). Both participants derive the same UUID independently, so simultaneous initiation converges (the lower DID's group wins). **This ID never appears on the wire** — it identifies the conversation inside each client, while sealed envelopes are addressed to rotating epoch tags.
   </Card>
   <Card title="Group Channel Streams" icon="users">
     **Opaque UUIDs minted at creation**
 
-    Regular group channels use randomly generated UUIDs written in the `ChannelCreated` event. Clients learn a channel's `StreamId` from the `ChannelCreated` or `RoomKeyDistributed` events they receive — there is no global channel registry.
+    Standard group channels use randomly generated UUIDs written in the `ChannelCreated` event; clients learn a channel's `StreamId` from the `ChannelCreated` or `MlsWelcomeEvent` they receive — there is no global channel registry. Sealed channels keep their UUID client-side only and address the wire by rotating epoch tags.
   </Card>
 </CardGroup>
 
 <Warning>
-Relays can observe which stream IDs a DID writes to, which can leak participation metadata for group channels (though not DM content). Rotating stream tags as a traffic-analysis mitigation is a planned enhancement. For now, be aware that relay operators learn which channels you are active in.
+For **standard** channels, relays can observe which stream IDs a device DID writes to, which leaks participation metadata (though never content). **Sealed** conversations — all DMs, plus channels that opt in — close this leak with ephemeral signers and rotating epoch tags. Choose sealed mode when participation metadata matters; timing and volume patterns remain observable either way.
 </Warning>
 
 ---
 
 ## Proof-of-Work
 
-Relays use proof-of-work to rate-limit event submission without requiring accounts. When a relay's `GET /info` response reports `powBits > 0`, every submitted envelope must include a mined `PowNonce` satisfying the difficulty target.
+Relays use proof-of-work to rate-limit event submission without requiring accounts. A relay's `GET /info` response advertises two difficulty tiers: `powBits` for standard envelopes and a higher `powBitsSealed` for `Kind = Sealed` envelopes — sealed traffic cannot be per-DID rate limited (every envelope carries a fresh ephemeral DID), so it pays extra work instead. When a tier is greater than zero, every submitted envelope of that kind must include a mined `PowNonce` satisfying it.
 
 **PoW hash formula:**
 
@@ -199,7 +199,7 @@ The hash must have at least `powBits` leading zero bits. The relay verifies this
 
 <Steps>
   <Step title="Build and encrypt the payload">
-    Serialize the domain event, encrypt it with the channel RoomKey or MLS secrets, and write it into `Payload`.
+    Serialize the domain event, encrypt it through the channel's MLS group, and write it into `Payload`.
   </Step>
   <Step title="Sign the canonical preimage">
     Compute the canonical signature preimage and produce an Ed25519 `Signature`. The `PowNonce` field is zero at this point.

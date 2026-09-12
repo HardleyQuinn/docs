@@ -1,7 +1,7 @@
 ---
 title: "Creating, Joining, and Managing Channels in EvilChat"
 sidebarTitle: "Channels"
-description: "Learn how to create encrypted channels, invite members, and manage channel settings. Each channel uses an end-to-end encrypted RoomKey or MLS group."
+description: "Learn how to create encrypted channels, add members, and manage channel settings. Every channel is an end-to-end encrypted MLS group, with an optional sealed mode that hides the channel from the relay entirely."
 ---
 
 Channels are named, persistent, end-to-end encrypted group spaces where any number of members can exchange messages, reactions, and shared media. Every message posted to a channel is encrypted before it leaves your device — the relay stores and forwards opaque ciphertext and never reads a word of your conversation. Creating a channel is instant, and the encryption setup happens automatically in the background.
@@ -13,45 +13,41 @@ Channels are named, persistent, end-to-end encrypted group spaces where any numb
     In the left sidebar, click the **+** button next to the Channels heading. The new-channel dialog opens.
   </Step>
   <Step title="Enter a name">
-    Type a name for your channel. Channel names are visible to members but the name itself is also encrypted in transit — it is only visible to people who hold the channel's RoomKey or belong to its MLS group.
+    Type a name for your channel. Channel names are encrypted in transit — the name is only visible to members of the channel's MLS group.
+  </Step>
+  <Step title="Choose sealed mode (optional)">
+    Check **sealed** to hide the channel from the relay entirely: every envelope it produces — messages, the creation event, even membership operations — is signed by a disposable key and addressed to a rotating stream tag. The relay cannot tell the channel exists. Leave it unchecked for a standard channel, whose ciphertext rides a stable stream ID. See [Sealed mode](/security/sealed-mode) for the trade-offs.
   </Step>
   <Step title="Confirm">
-    Click **Create**. EvilChat immediately mints a fresh RoomKey (AES-256-GCM) for the channel, or bootstraps an MLS group if the MLS core is available. The channel appears in your sidebar and you are its owner.
+    Click **Create**. EvilChat bootstraps a fresh MLS group with you as its first member. The channel appears in your sidebar and you are its owner.
   </Step>
-  <Step title="Invite members">
-    Open the Members panel (the person-list icon in the top bar), search for a peer by display name or DID, and click **Invite**. EvilChat seals the RoomKey (or sends an MLS Welcome) to that peer's inbox stream on the relay.
+  <Step title="Members join automatically">
+    v1 channels are server-public: your client automatically adds every announced member of the community to the group through their published KeyPackage, delivering each a sealed MLS Welcome. Members who announce later are added as they appear. Invite-only channels are a roadmap item.
   </Step>
 </Steps>
 
 ## How Encryption Works
 
-EvilChat supports two channel encryption modes, and the one your channel uses depends on when it was created and whether the optional MLS core is compiled in.
+Every channel is an **MLS group** (RFC 9420), run by the `evil-mls` Rust core. MLS provides:
 
-<Tabs>
-  <Tab title="RoomKey (AES-256-GCM)">
-    A **RoomKey** is a 256-bit symmetric key shared with every channel member. Each message is encrypted with AES-256-GCM using that key; the relay sees only the ciphertext. RoomKeys are distributed 1-on-1: the channel owner ECIES-seals a copy to each member's X25519 seal public key and posts it to that member's inbox stream.
+- **Epoch-based group state** — every add, remove, or update triggers a key ratchet (Commit), so new keys are not derived from old ones.
+- **Cryptographic membership** — banning a member triggers a Commit that ejects them from the group; they cannot decrypt future messages even if they retain every key they ever held.
+- **Forward secrecy** — each epoch uses independently derived keying material, and old message secrets are deleted.
 
-    `#general` and `server-control` use static RoomKeys. Key rotation is not automatic in v1 — epoch is fixed at 0. Full forward secrecy requires migrating to MLS.
-  </Tab>
-  <Tab title="MLS (Messaging Layer Security)">
-    Channels created when the `evil-mls` Rust core is available get a proper **MLS group**. MLS provides:
+New members receive an MLS **Welcome** message sealed to their inbox. The Welcome carries enough state to join the group at the current epoch, plus the channel's name and policy flags so your client can show the channel immediately.
 
-    - **Epoch-based group state** — every add or remove triggers a key update (Commit), so new keys are not derived from old ones.
-    - **Cryptographic membership** — banning a member triggers a Commit that ejects them from the group; they cannot decrypt future messages even if they retain old ciphertext.
-    - **Forward secrecy** — each epoch uses independently derived keying material.
-
-    New members receive an MLS **Welcome** message sealed to their inbox. The Welcome carries enough state to join the group at the current epoch.
-  </Tab>
-</Tabs>
+<Note>
+Channels created by early versions of EvilChat used a static shared **RoomKey** instead of MLS. Those channels were migrated automatically by their owners' clients; the old ciphertext still decrypts, but nothing encrypts that way anymore. See the [encryption model](/security/encryption-model#legacy-roomkey-ciphertext).
+</Note>
 
 ## Joining a Channel
 
-You cannot browse or request to join channels — you must be explicitly invited. When a channel owner (or moderator) invites you, the relay delivers a **KeySeal** envelope to your personal inbox stream. That envelope contains either a `RoomKeyDistributedEvent` (for RoomKey channels) or an `MlsWelcomeEvent` (for MLS channels), both sealed to your X25519 seal key.
+You cannot browse or request to join channels. In v1, channel owners' clients add every announced community member automatically; when that happens for you, the relay delivers a **KeySeal** envelope to your personal inbox stream containing an `MlsWelcomeEvent` sealed to your X25519 seal key.
 
-Your client decrypts the sealed envelope and registers the key or Welcome. From that point, all past and future channel traffic in your local archive becomes readable, and new messages decrypt in real time.
+Your client decrypts the sealed envelope, joins the MLS group at the current epoch, and publishes a fresh KeyPackage (the one just consumed is spent). From that point, new channel traffic decrypts in real time. Messages from epochs before you joined are not decryptable — that is forward secrecy working as intended.
 
 <Note>
-**"Park, don't drop."** If a channel message arrives at your client before the RoomKey or MLS Welcome does — for example, because the relay delivered them out of order — the ciphertext is stored locally and replayed automatically the moment the key lands. You will never see a permanently undecryptable message because of a race condition.
+**"Park, don't drop."** If a channel message arrives at your client before its Welcome does — or, in a sealed channel, arrives under a stream tag you cannot resolve yet — the ciphertext is stored locally and replayed automatically the moment the key material lands. You will never lose a message to a race condition.
 </Note>
 
 ## Channel Members

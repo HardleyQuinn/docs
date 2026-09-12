@@ -8,12 +8,16 @@ The fastest way to experience EvilChat is the built-in two-user demo. A single `
 
 ## Prerequisites
 
-You need the **.NET 10 SDK** (or later) installed on your machine. Verify with:
+You need the **.NET 10 SDK** (or later) and a **Rust toolchain** (via [rustup](https://rustup.rs)) installed on your machine. Verify with:
 
 ```bash
 dotnet --version
 # should print 10.x.x or higher
+cargo --version
+# any recent stable toolchain
 ```
+
+Rust is required because all encryption runs through the native `evil-mls` core — EvilChat refuses to start without it.
 
 <Note>
   The mobile app is not required for this demo and is excluded from the default build. The web clients are all you need to complete this quickstart.
@@ -29,6 +33,16 @@ dotnet --version
     git clone https://github.com/HardleyQuinn/EvilChat.git
     cd EvilChat
     ```
+  </Step>
+
+  <Step title="Build the evil-mls native core">
+    Build the Rust crypto core once before the first run. The .NET build picks the library up automatically afterward:
+
+    ```bash
+    cargo build --release --manifest-path rust/evil-mls/Cargo.toml
+    ```
+
+    This is mandatory: MLS is EvilChat's only encryption scheme, and it lives in this native library.
   </Step>
 
   <Step title="Start the Aspire orchestrator">
@@ -60,10 +74,10 @@ dotnet --version
 
     1. Press **⌘K** (or **Ctrl+K**) to open the command palette.
     2. Type `#general` and select **Create channel**.
-    3. EvilChat generates an AES-256-GCM RoomKey, encrypts a message with it, and automatically seals the RoomKey to Bob via a `KeySeal` envelope addressed to Bob's inbox stream.
+    3. EvilChat bootstraps the channel's MLS group and automatically adds Bob through his published KeyPackage, delivering him an MLS Welcome via a `KeySeal` envelope addressed to his inbox stream.
     4. Type a message and press **Enter**.
 
-    Watch Bob's window — the message arrives within approximately **1.5 seconds** (one poll cycle). Bob's client fetches the new envelope from the relay, decrypts the RoomKey from its inbox stream, and decrypts the message payload. Reply as Bob to complete the exchange.
+    Watch Bob's window — the message arrives within approximately **1.5 seconds** (one poll cycle). Bob's client opens the Welcome from its inbox stream, joins the MLS group, and decrypts the message payload. Reply as Bob to complete the exchange.
   </Step>
 </Steps>
 

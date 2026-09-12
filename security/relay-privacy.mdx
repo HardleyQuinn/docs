@@ -15,7 +15,7 @@ A relay operator with full access to the event log can observe the following for
 </Accordion>
 
 <Accordion title="StreamId (opaque routing key)">
-  Each envelope carries a `StreamId` — a `Guid` used to route it to the right channel or inbox. The relay stores and serves it as an opaque value. It does not contain a channel name or any human-readable information. However, a relay operator who observes which DIDs write to which stream IDs can build a partial social graph over time.
+  Each envelope carries a `StreamId` — a `Guid` used to route it. The relay stores and serves it as an opaque value; it does not contain a channel name or any human-readable information. For standard channels the ID is stable, so an operator who observes which DIDs write to which stream IDs can build a partial write-side graph over time. For sealed traffic (all DMs, and channels with the sealed policy) the `StreamId` is a **rotating epoch tag** derived from the conversation's MLS epoch secret — it changes at every epoch and is unlinkable across rotations, so no stable identifier ever appears on the wire.
 </Accordion>
 
 <Accordion title="Envelope size and timestamp">
@@ -32,8 +32,9 @@ A relay operator with full access to the event log can observe the following for
 |---|---|
 | **Message content** | All non-`Identity` payloads are ciphertext. The relay has no keys. |
 | **Who sent a DM** | Sealed-sender (`Kind = Sealed`) uses a fresh ephemeral signing key per message. The real sender's identity is inside the ciphertext, visible only to the recipient after decryption. |
+| **Which DM (or sealed channel) a message belongs to** | Sealed traffic is addressed to rotating epoch tags. The relay cannot group a conversation's messages together across epochs, let alone attribute them. |
 | **Who is reading** | Clients sync by polling `GET /events?since=<offset>` — a bulk scan by arrival offset. The relay cannot tell which streams a client is interested in from this query shape. |
-| **Group membership changes** | MLS commits (member add/remove/update) are `Kind = Mls` — opaque TLS-serialized bytes. The relay cannot parse them. |
+| **Group membership changes** | MLS commits (member add/remove/update) are opaque TLS-serialized bytes — `Kind = Mls` in standard channels, and fully sealed envelopes in sealed channels, where the relay cannot even tell a membership operation happened. |
 | **Channel names** | Channel IDs are opaque `Guid` values. No cleartext channel name appears on the wire. |
 | **Reaction targets, edit content** | All message operations are inside encrypted payloads. The relay stores the blob; it cannot see what event type it is (aside from `Identity`). |
 
@@ -80,8 +81,11 @@ EvilChat takes several steps to reduce the metadata visible even when you accept
   <Card title="Bulk Sync (No Get-by-ID)" icon="database">
     Clients sync with a single `GET /events?since=<offset>` call. There is no per-stream or per-DID query API. The relay cannot distinguish which streams a client is following from its sync behavior.
   </Card>
-  <Card title="Rotating Stream Tags (Roadmap)" icon="arrows-rotate">
-    A planned mitigation will let DIDs rotate the stream IDs they write to on a schedule, breaking long-term correlation between a DID and its activity pattern.
+  <Card title="Rotating Stream Tags" icon="arrows-rotate">
+    Sealed conversations are addressed by a tag derived from the MLS epoch secret. Every epoch change — a member joining, a ban, a periodic ratchet update — rotates the tag, so the relay cannot correlate a conversation's traffic across epochs.
+  </Card>
+  <Card title="Sealed Channels (Opt-In)" icon="lock">
+    Any channel can opt into sealed mode at creation. Its messages, its creation event, and even its membership commits ride ephemeral-signed sealed envelopes under rotating tags — the relay never sees the channel exist. See the sealed mode page for the full design.
   </Card>
 </CardGroup>
 
@@ -89,10 +93,14 @@ EvilChat takes several steps to reduce the metadata visible even when you accept
 
 The relay's two anti-spam mechanisms — token bucket rate limiting and proof-of-work — are designed to work without learning who you are:
 
-- **Rate limiting** is keyed by `AuthorDid`. As noted above, the relay does not verify signatures, so the `AuthorDid` can be any value. For sealed-sender DMs, the ephemeral DID is rate-limited independently of your real DID, and PoW provides the actual spam friction.
-- **Proof-of-work** requires the sender to compute a nonce such that `SHA256(preimage ‖ signature ‖ nonce)` has at least `PowBits` leading zero bits. The work cost is identical whether the signing DID is real or spoofed — it is purely computational friction, not identity-based.
+- **Rate limiting** is keyed by the claimed `AuthorDid` and applies only to non-sealed envelopes. Sealed envelopes are exempt: their ephemeral DIDs would each get a fresh, meaningless bucket, so the relay does not bucket them at all.
+- **Proof-of-work** requires the sender to compute a nonce such that `SHA256(preimage ‖ signature ‖ nonce)` has enough leading zero bits. There are two tiers, advertised in `GET /info`: `PowBits` for standard envelopes, and a higher `PowBitsSealed` for sealed envelopes — the extra work replaces the rate limit the relay cannot apply to anonymous traffic. The cost is identical whether the signing DID is real or spoofed; it is purely computational friction, not identity-based.
 
 The relay learns nothing about your identity from either mechanism that it does not already learn from the `AuthorDid` field.
+
+## What Remains Visible
+
+Honesty matters more than marketing here. Even with sealed mode everywhere, a relay operator still observes **timing, frequency, and size**: when envelopes arrive, how often, and how large they are. Sustained traffic analysis on those signals can suggest that *some* conversation is active, even if the operator cannot tell which one or between whom. Payload padding and cover traffic are open design areas, not shipped mitigations. Welcome deliveries also ride per-recipient inbox streams, so an operator can see that *someone* invited a given user to *something* at a point in time.
 
 <Info>
   **Trust model:** If you self-host your relay, you are your own relay operator and the metadata above is visible only to you. If you use a shared or third-party relay, the operator can observe the metadata described in this page. The protocol does not require you to trust your relay operator for confidentiality of message content — but you should choose or run a relay whose operator you trust not to perform traffic analysis on the metadata that is visible. Running your own relay is the strongest option.

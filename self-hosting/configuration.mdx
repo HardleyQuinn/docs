@@ -13,7 +13,8 @@ The relay reads its settings from `appsettings.json` (or `appsettings.Production
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `EvilChat:Relay:DbPath` | `string` | `relay.db` next to binary | Path to the SQLite database file. The relay creates it on first launch. Use an absolute path in production. |
-| `EvilChat:Relay:PowBits` | `int` | `0` | Leading zero bits required in the PoW hash. `0` disables proof-of-work. Each additional bit doubles the expected client computation. |
+| `EvilChat:Relay:PowBits` | `int` | `0` | Leading zero bits required in the PoW hash for standard envelopes. `0` disables proof-of-work. Each additional bit doubles the expected client computation. |
+| `EvilChat:Relay:PowBitsSealed` | `int` | `PowBits + 2` (or `0` if PoW is disabled) | The higher tier for `Kind = Sealed` envelopes, which are exempt from per-DID rate limiting. Keep this above `PowBits` — the extra work is sealed traffic's only flood bound. |
 | `EvilChat:Relay:MaxEnvelopeBytes` | `int` | `65536` | Maximum envelope body size in bytes (64 KiB). The relay returns HTTP 413 for anything larger. |
 | `EvilChat:Relay:RateCapacity` | `int` | `30` | Token bucket capacity per DID. A DID can burst this many envelopes before being throttled. |
 | `EvilChat:Relay:RateRefillPerMinute` | `int` | `30` | Tokens refilled per minute per DID. Combined with `RateCapacity`, this determines the sustained posting rate. |

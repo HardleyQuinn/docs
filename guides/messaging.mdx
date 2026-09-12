@@ -10,7 +10,7 @@ EvilChat messages are append-only events on an immutable ledger — every action
 
 Type your message in the **compose box** at the bottom of the chat window and press **Enter** (or click the **Send** button). The client:
 
-1. Encrypts the `MessageSentEvent` payload with the channel's RoomKey (or via MLS).
+1. Encrypts the `MessageSentEvent` payload through the channel's MLS group.
 2. Signs the resulting `SignedEnvelope` with your device Ed25519 key.
 3. Publishes the envelope to the relay.
 4. Displays the message optimistically in your UI while waiting for relay confirmation.

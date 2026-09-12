@@ -39,6 +39,16 @@ Banning a member appends a `MemberBannedEvent` to the channel stream. The banned
 
 **To lift a ban**, follow the same steps and click **Unban**. This appends a new `MemberBannedEvent` with `Lifted: true`. Because authority is evaluated at query time using the highest `(Timestamp, EventId)` among valid ban events for the target, the unban wins deterministically regardless of the order events arrive on other clients.
 
+## Bans Are Cryptographic, Not Just Social
+
+A ban does two things. First, honest clients suppress the banned member's messages — that is the convergent social agreement described above. Second, and stronger: the channel owner's client issues an **MLS Remove commit**, ratcheting the group to a new epoch whose keys the banned member cannot derive. From that epoch on, the banned member cannot *decrypt* channel traffic at all, even though they can still append ciphertext to the public relay (proof-of-work and rate limits bound the flood; honest clients ignore it).
+
+In a [sealed channel](/security/sealed-mode), the Remove commit itself rides a sealed envelope — the relay never observes that a membership operation happened, let alone who was ejected. If an unban follows, the member is re-added through their published KeyPackage with a fresh Welcome, exactly like a first join; messages sent while they were banned remain undecryptable to them permanently.
+
+<Note>
+Honest limits, stated plainly: a tombstoned or banned member's *pre-ban* messages and keys are not clawed back — anything they could decrypt before the ban, they keep. The Remove commit protects everything after it.
+</Note>
+
 ## Granting Moderator Status
 
 <Steps>

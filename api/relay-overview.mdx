@@ -4,7 +4,7 @@ sidebarTitle: "Overview"
 description: "The EvilChat relay exposes three HTTP endpoints: GET /info, POST /events, and GET /events. Learn the wire format and how clients interact with it."
 ---
 
-The EVIL relay is a stateless, append-only log over HTTP. It stores signed envelopes as opaque bytes, assigns monotonic arrival offsets, and serves bulk chronological sync — nothing more. The relay never decrypts payloads, never filters by recipient, and never verifies Ed25519 signatures; those responsibilities belong to clients. Its only role is mechanical admission control (size, proof-of-work, and per-DID rate limiting) followed by durable append. This design means any relay can serve any client without learning anything about conversation content or social graph.
+The EVIL relay is a stateless, append-only log over HTTP. It stores signed envelopes as opaque bytes, assigns monotonic arrival offsets, and serves bulk chronological sync — nothing more. The relay never decrypts payloads, never filters by recipient, and never verifies Ed25519 signatures; those responsibilities belong to clients. Its only role is mechanical admission control (size, per-kind proof-of-work, and per-DID rate limiting for non-sealed traffic) followed by durable append. This design means any relay can serve any client without learning anything about conversation content or social graph.
 
 ## Base URL
 
@@ -20,8 +20,8 @@ Replace this with your relay's publicly accessible address when operating a prod
 
 The relay requires **no authentication** for either reads or writes. Anyone who can reach the relay's HTTP port can submit envelopes and read the event stream. Spam and abuse protection is instead provided by two complementary mechanisms:
 
-- **Proof-of-Work (PoW):** Before the relay accepts an envelope, the `PowNonce` field must be mined such that the envelope's PoW hash has at least `powBits` leading zero bits. A `powBits` of `0` disables PoW entirely (the default in the local demo).
-- **Per-DID rate limiting:** Each author DID is subject to a token-bucket rate limit. The bucket's capacity and refill rate are published by the relay in the `/info` response.
+- **Proof-of-Work (PoW):** Before the relay accepts an envelope, the `PowNonce` field must be mined so the envelope's PoW hash meets the kind's tier — `powBits` for standard envelopes, the higher `powBitsSealed` for sealed ones. A tier of `0` disables PoW for that kind (the default in the local demo).
+- **Per-DID rate limiting:** Each author DID on non-sealed envelopes is subject to a token-bucket rate limit; capacity and refill rate are published in `/info`. Sealed envelopes are exempt — every one carries a fresh ephemeral DID, so bucketing them meters nothing; the sealed PoW tier is their flood bound.
 
 See the [GET /info reference](/api/relay-info) for the exact parameters your client needs to read before submitting an envelope.
 
@@ -54,8 +54,8 @@ Every envelope on the relay is a `SignedEnvelope` JSON object. All fields are re
 <ParamField body="kind" type="integer (0–4)" required>
   Envelope kind. Controls how the client interprets the payload:
   - `0` — `identity`: signed plaintext domain event on the public directory stream
-  - `1` — `encrypted`: RoomKey (AES-256-GCM Sender Key) encrypted channel message
-  - `2` — `keySeal`: RoomKey material sealed 1-on-1 to a single recipient's inbox stream
+  - `1` — `encrypted`: legacy RoomKey channel ciphertext (decrypt-only; no longer produced)
+  - `2` — `keySeal`: an MLS Welcome sealed 1-on-1 to a single recipient's inbox stream
   - `3` — `mls`: MLS traffic (TLS-serialised MLS message — application or handshake)
   - `4` — `sealed`: Sealed-sender DM; the outer `authorDid` is an ephemeral key that authenticates no one — the real author is inside the ciphertext
 </ParamField>

@@ -4,7 +4,7 @@ sidebarTitle: "Direct Messages"
 description: "EvilChat DMs use sealed-sender encryption so the relay cannot see who sent a message, only who received it. Learn how to open and use DMs."
 ---
 
-Direct messages in EvilChat go further than ordinary end-to-end encryption. In most E2EE chat apps, even if the relay cannot read your message content, it can still see metadata — specifically, who sent a message to whom. EvilChat eliminates that leak with **sealed-sender encryption**: the relay receives a ciphertext whose outer layer is signed by a disposable ephemeral key that authenticates nobody. Only the recipient can unwrap the inner layer and learn who actually sent it.
+Direct messages in EvilChat go further than ordinary end-to-end encryption. In most E2EE chat apps, even if the relay cannot read your message content, it can still see metadata — who sent a message to whom, and which conversation it belongs to. EvilChat eliminates both leaks: **sealed-sender encryption** hands the relay a ciphertext whose outer layer is signed by a disposable ephemeral key that authenticates nobody, and the envelope is addressed to a **rotating stream tag** that changes with every encryption epoch instead of a stable conversation ID. Only the recipient can unwrap the message and learn who sent it — and only the two of you can even recognize which envelopes belong to your conversation.
 
 ## Opening a DM
 
@@ -17,7 +17,7 @@ You can start a DM with any peer whose identity has been announced on the relay'
     - Open the **Members panel** in any channel, find the person, and click the **DM** button next to their name.
   </Step>
   <Step title="The DM channel opens">
-    EvilChat derives a deterministic DM channel ID from the two participants' DIDs. Because the ID is deterministic, no negotiation handshake is needed — both sides independently compute the same channel ID and begin writing to the same stream.
+    EvilChat derives a deterministic DM channel ID from the two participants' DIDs and creates a two-member MLS group for it: your client adds the peer using the KeyPackage they published on the directory stream and delivers them a sealed Welcome. If you both open the DM at the same instant, the race resolves automatically — the group created by the lower DID wins, and any early messages are re-sent through it. The deterministic ID is used only inside your clients; it never appears on the wire.
   </Step>
   <Step title="Send your first message">
     Type in the compose box and press **Enter**. Your message is encrypted and dispatched as a `Sealed` envelope.
@@ -28,15 +28,15 @@ You can start a DM with any peer whose identity has been announced on the relay'
 
 Here is what happens under the hood when you send a DM, explained without cryptography jargon:
 
-1. **Your message is encrypted** with the DM channel's shared RoomKey (AES-256-GCM), the same way a channel message would be.
+1. **Your message is encrypted by the DM's MLS group** — a two-member RFC 9420 group whose keys ratchet forward with every epoch, so past messages stay safe even if a device key leaks later.
 2. **A fresh ephemeral keypair is generated** just for this send — it is used once and immediately discarded.
-3. **The encrypted payload is re-wrapped** in an outer envelope signed by that ephemeral key. From the relay's perspective, the outer `AuthorDid` field belongs to a key it has never seen before and will never see again. The relay cannot link the envelope to you.
-4. **The recipient unwraps the outer layer** and finds your real DID, your real signature, and your message inside the ciphertext — authenticated, but only visible to them.
+3. **The MLS ciphertext is wrapped** in an outer envelope signed by that ephemeral key and addressed to the conversation's current **epoch tag** — an opaque ID both of you derive from the group's epoch secret. From the relay's perspective, the `AuthorDid` belongs to a key it has never seen before, and the `StreamId` is a value that stops being used at the next epoch.
+4. **The recipient resolves the tag** back to your conversation, decrypts through the MLS group, and finds your real DID and signature inside the ciphertext — authenticated, but only visible to them.
 
-The relay knows the **destination** (the recipient's inbox stream ID) but not the **source** (your DID). This is the sealed-sender guarantee.
+The relay learns neither the **source** (your DID) nor the **conversation** (the tag is unlinkable across epochs). This is the sealed-sender guarantee, extended to the stream address itself.
 
 <Info>
-The current sealed-sender DM scheme encrypts over a static RoomKey shared for the lifetime of the DM conversation. A **Double Ratchet** session — which would give every individual message its own independent key and full forward secrecy — is on the roadmap. Until then, compromising the DM RoomKey would expose the full conversation history for that channel.
+DMs get **forward secrecy** from MLS epoch ratcheting and **post-compromise security** from a periodic self-update: every 7 days one side (deterministically, the lower DID) rotates its keys, which also rotates the stream tag. EvilChat chose two-member MLS over Signal's Double Ratchet to keep a single audited crypto stack — see the [encryption model](/security/encryption-model) for the full reasoning.
 </Info>
 
 ## The DMs Sidebar Tab
@@ -52,8 +52,8 @@ From the DMS tab you can:
 | | Direct Message | Channel |
 |---|---|---|
 | **Participants** | Two people | Any number of members |
-| **Sender privacy** | Relay cannot see sender (sealed-sender) | Relay cannot see content; sender DID is visible in envelope metadata |
-| **Encryption** | Sealed-sender over RoomKey | RoomKey (AES-256-GCM) or MLS group |
-| **Channel ID** | Deterministic from two DIDs | Randomly generated GUID |
-| **Forward secrecy** | Roadmap (Double Ratchet) | MLS channels only |
-| **Moderation** | N/A | Owner + moderators can ban |
+| **Sender privacy** | Always sealed — relay sees neither sender nor conversation | Standard: sender device DID visible on the wire. Sealed channels: same guarantees as DMs |
+| **Encryption** | Two-member MLS group under sealed sender | MLS group (`Kind = Mls`, or sealed if the channel opts in) |
+| **Wire address** | Rotating epoch tag | Stable channel GUID (standard) or rotating epoch tag (sealed) |
+| **Forward secrecy** | MLS epochs + periodic self-update | MLS epochs + membership churn (owners self-update sealed channels) |
+| **Moderation** | N/A | Owner + moderators can ban (MLS Remove — cryptographic ejection) |

@@ -21,7 +21,7 @@ No query parameters. No authentication required.
 </ResponseField>
 
 <ResponseField name="powBitsSealed" type="integer">
-  Reserved for a future sealed-sender PoW tier. In v1 this always equals `powBits`. Your client can read it but does not need to treat it differently from `powBits` today.
+  The PoW difficulty for `Kind = Sealed` envelopes. Sealed traffic carries a fresh ephemeral DID per message, so the relay cannot rate-limit it per DID — the higher work requirement is the spam bound instead. Relay operators typically set this above `powBits` (the self-hosted relay defaults to `powBits + 2` when PoW is enabled). Mine sealed envelopes to this tier.
 </ResponseField>
 
 <ResponseField name="maxEnvelopeBytes" type="integer">
@@ -63,13 +63,13 @@ curl http://localhost:5100/info | jq
 
 ## Proof-of-Work
 
-When `powBits` is greater than zero, every envelope must carry a mined `PowNonce`. The PoW algorithm is:
+When an envelope kind's tier is greater than zero (`powBits` for standard kinds, `powBitsSealed` for sealed), the envelope must carry a mined `PowNonce`. The PoW algorithm is:
 
 ```
 hash = SHA256(signaturePreimage ‖ signature ‖ nonce_as_int64_little_endian)
 ```
 
-The hash must have at least `powBits` leading zero bits. Your client iterates the `PowNonce` field starting from `0` until the target is met.
+The hash must have at least the kind's required leading zero bits. Your client iterates the `PowNonce` field starting from `0` until the target is met.
 
 Key properties of this design:
 
@@ -77,8 +77,8 @@ Key properties of this design:
 - **Work is transferable.** Re-mining someone else's envelope (for example, to boost it past a higher-difficulty relay) only donates hash work to them — their signature and payload remain unchanged and valid.
 - **The relay checks mechanically.** The relay computes the hash from the envelope bytes it already holds and counts leading zero bits. No domain knowledge is required.
 
-When `powBits` is `0`, skip mining entirely and set `PowNonce` to `0`.
+When the kind's tier is `0`, skip mining entirely and set `PowNonce` to `0`.
 
 <Note>
-  Relay operators can raise or lower `powBits` at any time — for example, in response to a spam event. Your client should re-fetch `/info` on every reconnect (not just on first launch) so it always mines to the current difficulty. If you submit an envelope with insufficient PoW after a difficulty increase, the relay returns `422` with `{"error":"pow","required":N}` where `N` is the new required bit count.
+  Relay operators can raise or lower `powBits` at any time — for example, in response to a spam event. Your client should re-fetch `/info` on every reconnect (not just on first launch) so it always mines to the current difficulty. If you submit an envelope with insufficient PoW after a difficulty increase, the relay returns `422` with `{"error":"pow","required":N}` where `N` is the required bit count for that envelope's kind — re-mine in place to `N` and resubmit; the nonce sits outside the signature, so no re-signing is needed.
 </Note>

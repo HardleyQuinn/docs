@@ -1,81 +1,97 @@
 ---
 title: "EvilChat Encryption Model: Channels, DMs, and Vault"
 sidebarTitle: "Encryption Model"
-description: "A deep dive into how EvilChat encrypts messages: RoomKey channels, MLS group encryption, sealed-sender DMs, ECIES key delivery, and vault re-encryption."
+description: "A deep dive into how EvilChat encrypts messages: MLS group encryption for channels and DMs, sealed-sender envelopes, ECIES key delivery, ratchet healing, and vault re-encryption."
 ---
 
-EvilChat uses different encryption schemes tuned to the threat model of each message type — group channels, direct messages, key delivery, and long-term archiving each get a purpose-built layer. No single key protects everything. A compromised relay learns nothing. A compromised device key leaks only messages that key could decrypt. And your vault archive is ciphertext that only your device can open. This page explains each layer precisely, so you can reason about what an attacker at each position in the system can and cannot learn.
+EvilChat encrypts everything with one audited stack: **RFC 9420 (Messaging Layer Security)** via the `evil-mls` Rust core, built on [OpenMLS](https://github.com/openmls/openmls). Channels are MLS groups. Direct messages are two-member MLS groups. Key delivery and long-term archiving each add a purpose-built layer on top. A compromised relay learns nothing. A compromised device key leaks only messages that key could decrypt. And your vault archive is ciphertext that only your device can open. This page explains each layer precisely, so you can reason about what an attacker at each position in the system can and cannot learn.
 
-## Channel Encryption (RoomKey)
+<Note>
+  The native `evil-mls` core is a hard requirement. There is no fallback cipher: a build without the native library refuses to run rather than silently degrading. The earlier RoomKey scheme is retired — see [Legacy RoomKey ciphertext](#legacy-roomkey-ciphertext) for how old messages stay readable.
+</Note>
 
-Standard channels use **AES-256-GCM** with a shared `RoomKey` — a 256-bit symmetric key distributed to channel members individually (see [Key Delivery](#key-delivery-ecies-sealed-box) below).
+## Group encryption (MLS)
 
-When the client encrypts a message, it uses the canonical envelope header fields as **AEAD associated data** (authenticated but not encrypted). This binds the ciphertext to its specific envelope: `EventId`, `Kind`, `AuthorDid`, `Timestamp`, `StreamId`, and `PrevEventHash` are all authenticated alongside the payload. A ciphertext extracted from one envelope cannot be replayed under a different header — the AEAD tag will not verify.
-
-**v1 note:** RoomKey channels use a static key per channel (epoch 0). Key rotation is deferred to MLS. New channels that negotiate MLS get epoch-based rotation automatically.
-
-<Accordion title="What AuthorDid verification looks like">
-  After decryption, the client checks that the `AuthorDid` field inside the decrypted payload matches the verified signer on the `SignedEnvelope`. Any RoomKey holder can forge the payload `AuthorDid` field — the inner check against the envelope signature is the authoritative one. This is enforced before any domain event is dispatched to projections.
-</Accordion>
-
-## Channel Encryption (MLS)
-
-For MLS-capable channels, EvilChat uses **RFC 9420 (Messaging Layer Security)** group encryption via the `evil-mls` Rust core (built on [OpenMLS](https://github.com/openmls/openmls)).
+Every channel — and every DM — is an MLS group. The group's creator is its first member; everyone else joins through a **Welcome** message.
 
 <CardGroup cols={2}>
-  <Card title="Forward Secrecy" icon="shield-check">
-    MLS uses epoch-based key ratcheting. Each commit (member add, remove, or update) advances the epoch and derives a fresh symmetric key. Old epoch keys are deleted, so a future key compromise cannot decrypt past messages.
+  <Card title="Forward secrecy" icon="shield-check">
+    MLS uses epoch-based key ratcheting. Each commit (member add, remove, or update) advances the epoch and derives fresh key material. Old message secrets are deleted after use, so a future key compromise cannot decrypt past messages. Groups retain a bounded window of three past epochs of message secrets so ciphertext that arrived out of order can still decrypt.
   </Card>
-  <Card title="Post-Compromise Security" icon="rotate">
-    After a device is removed from an MLS group, the remaining members perform a healing commit that derives new key material the removed device cannot predict, even if it retained old secrets.
+  <Card title="Post-compromise security" icon="rotate">
+    A designated member periodically issues a self-update commit that rotates its leaf secrets, so a past compromise stops reading future epochs. See [Ratchet healing](#ratchet-healing-self-updates) for the schedule and who commits.
   </Card>
-  <Card title="Member Addition (Welcome)" icon="user-plus">
-    New members receive an MLS **Welcome** message — a sealed package containing the group's current state and epoch key — delivered via [ECIES sealed box](#key-delivery-ecies-sealed-box) so only they can open it.
+  <Card title="Member addition (Welcome)" icon="user-plus">
+    New members receive an MLS **Welcome** — a sealed package containing the group's current state and epoch key — delivered via [ECIES sealed box](#key-delivery-ecies-sealed-box) so only they can open it. The Welcome also carries the channel's name and policy flags, so a joining client can project the channel before any group traffic decrypts.
   </Card>
-  <Card title="Cryptographic Removal" icon="user-minus">
-    Bans and removals are committed as MLS Remove proposals. The resulting commit ratchets the epoch, cryptographically ejecting the removed member. They cannot decrypt any traffic after their removal epoch.
+  <Card title="Cryptographic removal" icon="user-minus">
+    Bans and removals are MLS Remove commits. The commit ratchets the epoch, cryptographically ejecting the removed member: they cannot decrypt any traffic after their removal epoch, even with every key they ever held.
   </Card>
 </CardGroup>
 
-MLS traffic envelopes use `Kind = Mls`. The relay cannot distinguish MLS application messages from handshake commits — both are opaque TLS-serialized `MLSMessage` bytes.
+In a standard channel, MLS traffic rides envelopes of `Kind = Mls` on the channel's stream. The relay cannot distinguish application messages from handshake commits — both are opaque TLS-serialized `MLSMessage` bytes. In a [sealed channel](/security/sealed-mode), the same traffic rides `Kind = Sealed` envelopes under rotating stream tags instead, hiding even the channel's existence.
 
-## Key Delivery (ECIES Sealed Box)
+<Accordion title="What AuthorDid verification looks like">
+  After decryption, the client checks that the `AuthorDid` field inside the decrypted payload resolves to the verified signer of the envelope (through the device-subkey projection). Any group member can forge the payload `AuthorDid` field — the check against the verified signer is the authoritative one, and it runs before any domain event is dispatched to projections.
+</Accordion>
 
-RoomKeys and MLS Welcome messages are delivered one-on-one using **ECIES** (Elliptic Curve Integrated Encryption Scheme):
+## Direct messages (two-member MLS)
+
+A DM is an MLS group with exactly two members. The initiator creates the group, adds the peer using their published KeyPackage from the directory stream, and delivers the Welcome sealed to the peer's inbox. All DM traffic then rides [sealed-sender envelopes](/security/sealed-mode) — the relay never sees who is talking, and since the stream address is a rotating epoch tag, it cannot even correlate the conversation across epochs.
+
+Because the DM channel ID derives deterministically from both DIDs, both sides can initiate simultaneously and create competing groups. The race resolves deterministically: the group created by the **lower root DID wins**, the other side discards its group, joins the winner's Welcome, and re-sends any messages it had already written. Nothing is lost, and both clients converge on one group.
+
+<Note>
+  Why MLS for two people instead of Signal's Double Ratchet? EvilChat evaluated both and chose a single audited crypto stack: DMs reuse the exact KeyPackage, Welcome, and epoch machinery that channels use, instead of adding a second ratchet implementation and session store. The trade-off — MLS does not heal per round trip the way the Double Ratchet does — is covered by the periodic self-update policy below.
+</Note>
+
+## Ratchet healing (self-updates)
+
+MLS heals when a member commits an update, not automatically per round trip. EvilChat runs a background policy: for every long-lived conversation, one designated member issues a **self-update commit** at least every 7 days, rotating its leaf secrets and advancing the epoch.
+
+Exactly one member commits per conversation, because two members committing in the same epoch would fork the group:
+
+- In a **DM**, the peer with the lowest root DID commits (the same rule that resolves the initiation race).
+- In a **sealed channel**, the channel owner commits (matching the convention that only owners run membership).
+
+In sealed conversations the update commit itself rides a sealed envelope, so the relay cannot even see that the ratchet advanced — and each rotation also rotates the stream tag, unlinking the relay's view of the conversation.
+
+## Key delivery (ECIES sealed box)
+
+MLS Welcome messages are delivered one-on-one using **ECIES** (Elliptic Curve Integrated Encryption Scheme):
 
 1. The sender generates a fresh **ephemeral X25519 keypair**.
 2. A shared secret is derived via **X25519 Diffie-Hellman** between the ephemeral private key and the recipient's **seal public key** (the `SealPublicKey` from their `IdentityAnnounced` event).
 3. The shared secret is expanded through **HKDF-SHA-256** (salt = ephemeral public key ‖ recipient public key) to produce a 32-byte **AES-256-GCM key**. A separate random 12-byte nonce is generated for each seal.
-4. The payload (RoomKey bytes or MLS Welcome) is encrypted with AES-256-GCM.
+4. The payload (the MLS Welcome) is encrypted with AES-256-GCM.
 5. The sealed box is laid out as `ephemeralPub(32) ‖ nonce(12) ‖ ciphertext+tag` so the recipient can re-derive the shared secret from the leading bytes.
 
 Only the holder of the recipient's Ed25519 identity key (which controls the corresponding X25519 key) can open the box. These envelopes use `Kind = KeySeal` and are addressed to the recipient's **inbox stream** — an opaque stream ID derived from their DID that other users can post to but only the recipient reads.
 
-## Sealed-Sender DMs
+## Legacy RoomKey ciphertext
 
-Direct messages use **sealed sender** to hide the true author from the relay:
+Early EvilChat channels encrypted with a static shared **RoomKey** (AES-256-GCM under `Kind = Encrypted` envelopes, with the canonical header as AEAD associated data). That scheme is retired: nothing encrypts with a RoomKey anymore, and channels that used one were migrated to MLS by their owners.
 
-| Layer | Who signs | What the relay sees |
-|---|---|---|
-| Outer envelope | Fresh per-message **ephemeral** Ed25519 key | `AuthorDid` = ephemeral DID (identifies no one) |
-| Inner payload | Your **real** device key | Your real DID + signature (decrypted by recipient only) |
+Decryption support remains so history stays readable:
 
-The relay sees an `AuthorDid` it has never encountered before for every DM. It cannot correlate DMs to their senders, cannot build a social graph of who messages whom, and cannot apply per-sender rate limits to DMs (PoW serves as the spam deterrent instead). After the recipient decrypts the outer ciphertext, they verify the inner signature against the sender's real DID to authenticate the message.
+- `Kind = Encrypted` envelopes still decrypt with a stored RoomKey.
+- Sealed DMs from the RoomKey era (RoomKey-AEAD under an ephemeral outer signer) still open.
+- Inbound `RoomKeyDistributed` events are still processed — stored for decryption only.
 
-Envelopes of `Kind = Sealed` trigger this path. The DM channel itself is a deterministic ID derived from both participants' DIDs, so only they know to watch that stream.
+RoomKeys were static (epoch 0, never rotated), so RoomKey-era history has no forward secrecy. Everything written since the MLS migration does.
 
-## Vault Re-Encryption
+## Vault re-encryption
 
 When the vault daemon archives events, the client performs a second layer of encryption specifically for long-term storage:
 
-1. The client decrypts the incoming relay envelope using the appropriate session key (RoomKey or MLS epoch key).
+1. The client decrypts the incoming relay envelope using the appropriate MLS epoch key (or a legacy RoomKey for old ciphertext).
 2. It immediately re-encrypts the plaintext event under your **Storage Key** — a 256-bit AES-256-GCM key generated at initialization, stored only in your local `profile.json`, and never transmitted anywhere.
-3. The `nonce ‖ ciphertext+tag` blob is posted to the vault's `POST /archive` endpoint.
+3. The `nonce ‖ ciphertext+tag` blob is posted to the vault's `POST /archive` endpoint, indexed by the event's channel — never by the rotating wire address it happened to travel under.
 
 The vault stores only `(streamId, timestamp, nonce, ciphertext)` tuples. It never receives plaintext and never holds any key material. Even if your vault database is exfiltrated, the data is meaningless without your Storage Key.
 
-**By design, the original relay ciphertext is permanently undecryptable.** Transient MLS epoch keys and RoomKey material are ephemeral. The vault holds the only long-term copy of decrypted events, and it is encrypted under your Storage Key.
+**By design, the original relay ciphertext is permanently undecryptable.** MLS deletes message secrets as epochs advance — that is what forward secrecy means. The vault holds the only long-term copy of decrypted events, and it is encrypted under your Storage Key.
 
 <Note>
-  **`Identity`-kind envelopes are a sanctioned exception.** Directory announcements (`IdentityAnnounced`, `DeviceAuthorized`, `DeviceRevoked`, `KeyPackagePublished`) are **signed plaintext** — the relay and any observer can read them. This is intentional: peers must be able to discover each other's seal public keys and verify device authority before any session keys have been established. Everything else — messages, reactions, edits, bans, RoomKeys, MLS traffic — is always ciphertext on the wire.
+  **`Identity`-kind envelopes are a sanctioned exception.** Directory announcements (`IdentityAnnounced`, `DeviceAuthorized`, `DeviceRevoked`, `KeyPackagePublished`) are **signed plaintext** — the relay and any observer can read them. This is intentional: peers must be able to discover each other's seal public keys, KeyPackages, and device authority before any session keys have been established. Everything else — messages, reactions, edits, bans, MLS traffic — is always ciphertext on the wire.
 </Note>

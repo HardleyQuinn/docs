@@ -31,10 +31,10 @@ EvilChat is a decentralized, end-to-end encrypted messaging platform built on th
     On first load, EvilChat generates a fresh Ed25519 keypair on your device. Your DID (`did:evil:<base64url(pubkey)>`) is announced to the directory stream as a signed plaintext `Identity` envelope — the only kind that is ever sent in the clear.
   </Step>
   <Step title="Join or create a channel">
-    Browse the channel list to join an existing channel, or hit **⌘K** to open the command palette and create a new one. When you create a channel, EvilChat automatically seals the AES-256-GCM RoomKey to every visible peer so they can decrypt your messages.
+    Browse the channel list to join an existing channel, or hit **⌘K** to open the command palette and create a new one. When you create a channel, EvilChat bootstraps an MLS group and automatically adds every visible peer through their published KeyPackage, delivering each a sealed Welcome.
   </Step>
   <Step title="Start chatting">
-    Type your message and send. EvilChat encrypts it under the channel RoomKey, signs the envelope with your Ed25519 key, stamps it with a proof-of-work nonce, and POSTs it to the relay — all before the bytes leave your device. Peers poll the relay and decrypt locally.
+    Type your message and send. EvilChat encrypts it through the channel's MLS group, signs the envelope with your Ed25519 device key, stamps it with a proof-of-work nonce, and POSTs it to the relay — all before the bytes leave your device. Peers poll the relay and decrypt locally.
   </Step>
 </Steps>
 

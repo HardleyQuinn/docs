@@ -10,7 +10,7 @@ The relay exposes two data endpoints — one for submitting an envelope and one 
 
 ## POST /events
 
-Submit a signed `SignedEnvelope` to the relay. The relay runs four mechanical checks in order: envelope size, JSON parseability, proof-of-work, and per-DID rate limit. If all checks pass, the envelope is appended to the store and the relay returns the assigned arrival offset.
+Submit a signed `SignedEnvelope` to the relay. The relay runs four mechanical checks in order: envelope size, JSON parseability, proof-of-work at the envelope kind's tier, and — for non-sealed kinds only — the per-DID rate limit. Sealed envelopes skip the rate limit (their ephemeral DIDs would make each bucket meaningless) and pay the higher `powBitsSealed` tier instead. If all checks pass, the envelope is appended to the store and the relay returns the assigned arrival offset.
 
 ### Request body
 
@@ -21,7 +21,7 @@ A single `SignedEnvelope` JSON object. All fields are required.
 </ParamField>
 
 <ParamField body="kind" type="integer (0–4)" required>
-  Envelope kind. `0` = identity (plaintext), `1` = encrypted (RoomKey), `2` = keySeal, `3` = mls, `4` = sealed (sealed-sender DM).
+  Envelope kind. `0` = identity (plaintext), `1` = encrypted (legacy RoomKey, decrypt-only), `2` = keySeal, `3` = mls, `4` = sealed (sealed sender — DMs and sealed channels).
 </ParamField>
 
 <ParamField body="authorDid" type="string" required>
@@ -41,7 +41,7 @@ A single `SignedEnvelope` JSON object. All fields are required.
 </ParamField>
 
 <ParamField body="powNonce" type="integer (int64)" required>
-  Proof-of-work nonce. Set to `0` when `powBits` is `0` (PoW disabled). When PoW is required, this field is incremented until `SHA256(preimage ‖ signature ‖ nonce)` has at least `powBits` leading zero bits.
+  Proof-of-work nonce. Set to `0` when the envelope kind's tier is `0` (PoW disabled). When PoW is required, this field is incremented until `SHA256(preimage ‖ signature ‖ nonce)` has enough leading zero bits for the kind's tier — `powBits` for standard envelopes, `powBitsSealed` for `Kind = Sealed`.
 </ParamField>
 
 <ParamField body="payload" type="string (base64)" required>
@@ -82,8 +82,8 @@ The `offset` is the relay's monotonic arrival counter assigned to this envelope.
 |--------|------|-------|
 | `413 Payload Too Large` | _(empty)_ | Envelope body exceeds `maxEnvelopeBytes` (default 65 536 bytes) |
 | `422 Unprocessable Entity` | `{"error":"malformed"}` | Envelope JSON cannot be parsed or is missing required fields |
-| `422 Unprocessable Entity` | `{"error":"pow","required":N}` | `PowNonce` does not satisfy the relay's current PoW difficulty (`N` bits) |
-| `429 Too Many Requests` | _(empty)_ | The author DID has exhausted its token-bucket allowance; back off before retrying |
+| `422 Unprocessable Entity` | `{"error":"pow","required":N}` | `PowNonce` does not satisfy the difficulty for this envelope's kind — `N` is the required bit count for that kind's tier, so re-mine to `N` and resubmit |
+| `429 Too Many Requests` | _(empty)_ | The author DID has exhausted its token-bucket allowance (never returned for sealed envelopes); back off before retrying |
 
 ---
 

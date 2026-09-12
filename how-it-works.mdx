@@ -15,7 +15,7 @@ When you send a message in EvilChat, your client executes a precise pipeline bef
     EvilChat constructs a `MessageSentEvent` record containing your author DID, a new `EventId` (GUID), the channel ID, the message body, and an author-asserted Unix timestamp (used for display only — never for ordering).
   </Step>
   <Step title="Serialize and encrypt">
-    The event is serialized to JSON and encrypted with the channel's AES-256-GCM RoomKey (or sealed inside an MLS application message for MLS channels). The resulting ciphertext becomes the `Payload` of a `SignedEnvelope`. The canonical envelope header (all fields except the PoW nonce) is used as AEAD associated data, so the ciphertext is bound to this exact envelope and cannot be replayed under a different header.
+    The event is serialized to JSON and encrypted inside an MLS application message by the channel's group. The resulting ciphertext becomes the `Payload` of a `SignedEnvelope`. The canonical envelope header (all fields except the PoW nonce) is used as AEAD associated data, so the ciphertext is bound to this exact envelope and cannot be replayed under a different header.
   </Step>
   <Step title="Sign the envelope">
     Your client signs the canonical preimage of the envelope with your Ed25519 private key and stores the 64-byte signature in the `Signature` field. The relay never checks this signature — that's the receiving client's job.
@@ -27,7 +27,7 @@ When you send a message in EvilChat, your client executes a precise pipeline bef
     The complete `SignedEnvelope` is posted to `POST /events`. The relay checks the envelope's size, PoW difficulty, and your per-DID rate limit token bucket — nothing else. It assigns a monotonic arrival offset and stores the raw bytes.
   </Step>
   <Step title="Peers poll and decrypt">
-    Other clients poll `GET /events?since=<last_offset>&limit=500` on their sync interval (~1.5 s in the demo). They receive the new envelope, verify the Ed25519 signature, decrypt the payload with the channel RoomKey, confirm the decrypted author DID matches the verified signer, and dispatch the domain event to their local projections.
+    Other clients poll `GET /events?since=<last_offset>&limit=500` on their sync interval (~1.5 s in the demo). They receive the new envelope, verify the Ed25519 signature, decrypt the payload through the channel's MLS group, confirm the decrypted author DID resolves to the verified signer, and dispatch the domain event to their local projections.
   </Step>
 </Steps>
 
@@ -58,7 +58,7 @@ EvilChat's entire application state is derived from an **append-only event log**
 
 Three projection rules underpin EvilChat's convergence guarantees:
 
-- **Park, don't drop.** If an `Encrypted` or `Mls` envelope arrives before the client has the RoomKey (e.g., a `KeySeal` is in flight), the ciphertext is stored in a parking lot and replayed automatically once the key lands. Projections converge regardless of arrival order.
+- **Park, don't drop.** If an envelope arrives before the client can decrypt it — the MLS Welcome is still in flight, or a sealed envelope's rotating stream tag is not yet resolvable — the ciphertext is stored in a parking lot and replayed automatically once the key material lands. Projections converge regardless of arrival order.
 - **Cursors advance by relay offset.** Clients never use author-asserted timestamps for ordering — those are display hints only. The relay's monotonic offset is the authoritative sequence.
 - **Authority is resolved at query time.** Ban and moderator-grant events can arrive out of order; the projection re-evaluates authority (keyed-maximum per `(channel, target)` among events whose author holds valid authority) every time it answers a query. A grant that arrives after a ban still applies retroactively.
 
@@ -69,18 +69,18 @@ Every `SignedEnvelope` carries a `Kind` field that tells the receiving client ho
 | Kind | Name | Purpose |
 |---|---|---|
 | `0` | `Identity` | Signed **plaintext** directory event (`IdentityAnnouncedEvent`, `KeyPackagePublishedEvent`, device authorization/revocation). The only sanctioned exception to ciphertext-only — peers must be discoverable before any session keys exist. |
-| `1` | `Encrypted` | Domain event encrypted with the channel's AES-256-GCM **RoomKey** (Sender Key model). Used for channel messages, reactions, edits, deletions, and channel creation on non-MLS channels. |
-| `2` | `KeySeal` | RoomKey material sealed 1-on-1 to a single recipient using ECIES (the recipient's X25519 `SealPublicKey`). Addressed to the recipient's inbox stream. Contains `RoomKeyDistributedEvent` or `MlsWelcomeEvent`. |
-| `3` | `Mls` | MLS traffic on a channel stream: both application messages (domain events inside) and handshake commits. Your client distinguishes them during MLS processing. Used for new channels with full MLS group encryption. |
+| `1` | `Encrypted` | **Retired, decrypt-only.** Historical ciphertext from the RoomKey era (AES-256-GCM Sender Key model). Nothing produces this kind anymore. |
+| `2` | `KeySeal` | An MLS Welcome sealed 1-on-1 to a single recipient using ECIES (the recipient's X25519 `SealPublicKey`). Addressed to the recipient's inbox stream. Contains `MlsWelcomeEvent` (or, historically, `RoomKeyDistributedEvent`). |
+| `3` | `Mls` | MLS traffic on a standard channel stream: both application messages (domain events inside) and handshake commits. Your client distinguishes them during MLS processing. |
 | `4` | `Sealed` | **Sealed-sender** envelope for DMs. The outer envelope is signed by a fresh per-message ephemeral key (`AuthorDid` is that ephemeral key and authenticates no one). The real author DID, their Ed25519 signature, and `PrevEventHash` live inside the ciphertext and are verified post-decrypt. The relay cannot see who sent a DM. |
 
 <Note>
-  The mandatory client pipeline is **Verify → decrypt → bind → dispatch**. Envelope signatures are checked first; after decryption, the payload's `AuthorDid` field must match the verified signer before the event is dispatched to any projection. This matters because any RoomKey holder could forge payload fields — the protocol closes that gap by anchoring author identity to the envelope signature, not the decrypted JSON.
+  The mandatory client pipeline is **Verify → decrypt → bind → dispatch**. Envelope signatures are checked first; after decryption, the payload's `AuthorDid` field must match the verified signer before the event is dispatched to any projection. This matters because any group member could forge payload fields — the protocol closes that gap by anchoring author identity to the verified signer, not the decrypted JSON.
 </Note>
 
 ## The Vault
 
-The `evilvault` daemon is an optional, self-hosted personal archive. Because transient message keys (RoomKeys, MLS epoch keys) make archived relay ciphertext permanently undecryptable by design, the vault works differently: your EvilChat client decrypts incoming messages as normal and then **re-encrypts the plaintext under a Storage Key you control** before sending records to the vault over its local HTTP API (`POST /archive`).
+The `evilvault` daemon is an optional, self-hosted personal archive. Because transient MLS message keys make archived relay ciphertext permanently undecryptable by design, the vault works differently: your EvilChat client decrypts incoming messages as normal and then **re-encrypts the plaintext under a Storage Key you control** before sending records to the vault over its local HTTP API (`POST /archive`).
 
 The vault stores only what your client sends it — it never connects to a relay, never holds your keypair, and never performs any decryption. Auth is a bearer token minted during `evilvault init` and stored in `~/.config/evilvault/config.json` (or `%AppData%\evilvault\config.json` on Windows). You can rotate the token at any time with `evilvault token rotate`.
 

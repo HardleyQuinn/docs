@@ -8,7 +8,7 @@ The EvilChat client can relay-prune old ciphertext, but you can preserve your co
 
 ## How the Vault Works
 
-When the EvilChat client receives an encrypted envelope from the relay, it decrypts the payload using the appropriate session key (RoomKey or MLS group key). Before displaying the message, it immediately re-encrypts the plaintext under your **Storage Key** — a 256-bit AES-256-GCM key generated at initialization, stored only in your local `profile.json`, and never transmitted anywhere — and ships the `nonce ‖ ciphertext+tag` blob to evilvault via a local HTTP call authenticated with a pairing token.
+When the EvilChat client receives an encrypted envelope from the relay, it decrypts the payload through the appropriate MLS group (or a stored legacy RoomKey for historical ciphertext). Before displaying the message, it immediately re-encrypts the plaintext under your **Storage Key** — a 256-bit AES-256-GCM key generated at initialization, stored only in your local `profile.json`, and never transmitted anywhere — and ships the `nonce ‖ ciphertext+tag` blob to evilvault via a local HTTP call authenticated with a pairing token.
 
 The vault stores `VaultRecord` entries: each record carries a stream ID, a timestamp, the nonce, and the ciphertext. The vault **never sees plaintext** and **never holds any decryption key material**. If an attacker compromises the vault's database, they gain only ciphertext that is meaningless without your Storage Key.
 

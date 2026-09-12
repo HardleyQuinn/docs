@@ -1,0 +1,61 @@
+---
+title: "Sealed Mode: Hiding Conversations from the Relay"
+sidebarTitle: "Sealed Mode"
+description: "Sealed mode hides who is talking and which conversation traffic belongs to: ephemeral signers, rotating epoch stream tags, and a proof-of-work tier that replaces rate limiting."
+---
+
+End-to-end encryption hides *what* you said. Sealed mode hides *that you said it* — and which conversation it belongs to. A sealed envelope reaches the relay signed by a key that has never been seen before and will never be seen again, addressed to a stream ID that stops existing at the next encryption epoch. The relay stores it, serves it, and learns nothing it can correlate.
+
+Sealed mode is always on for direct messages and available as a per-channel opt-in at creation time.
+
+## What the relay sees
+
+| Field | Standard channel | Sealed conversation |
+|---|---|---|
+| `AuthorDid` | Your device DID | A fresh ephemeral key, one per message |
+| `StreamId` | The channel's stable UUID | A rotating epoch tag, unlinkable across epochs |
+| `Kind` | `Mls` (or `Identity`/`KeySeal`) | `Sealed` |
+| Membership operations | Opaque `Mls` commits on the channel stream | Indistinguishable from any other sealed envelope |
+| Message content | Ciphertext | Ciphertext |
+
+What remains visible in both modes: envelope sizes, arrival times, and overall traffic volume. Padding and cover traffic are open design areas — sealed mode makes honest claims, not absolute ones.
+
+## The three mechanisms
+
+### Ephemeral outer signers
+
+Every sealed envelope is signed by a fresh Ed25519 keypair generated for that one message and discarded. The outer signature proves only integrity. Your real device DID, your real signature over the event and its chain position, all live inside the ciphertext in a `SealedInner` structure — the recipient verifies them after decryption, running the same authority checks a standard envelope gets, just on the other side of the seal.
+
+### Rotating epoch stream tags
+
+A sealed conversation is never addressed by its channel ID. Instead, members derive a 16-byte **stream tag** from the conversation's MLS epoch secret (an MLS exporter with the label `evil-stream-tag-v1`) and use it as the envelope's `StreamId`. Every epoch change — a member joining, a ban, a periodic ratchet update — produces an unrelated new tag.
+
+Two properties make this workable:
+
+- **Only current epochs derive.** A tag cannot be re-computed for a past epoch, so clients record each tag as the group advances and resolve inbound envelopes against that registry. An envelope on a tag you cannot resolve yet (your Welcome is still in flight) is parked and replayed the moment you join.
+- **Commits ride the old tag.** A commit that advances the epoch is addressed to the tag of the epoch it came *from* — that is where the members who must merge it are still listening. Once merged, everyone derives the next tag and moves.
+
+The result: even a relay operator who suspects two tags belong to the same conversation has no way to confirm it. Each rotation is a clean break.
+
+### The sealed proof-of-work tier
+
+Relays rate-limit standard envelopes per claimed author DID. Sealed envelopes make that impossible by design — every one carries a different DID — so relays do not bucket them at all. Instead, sealed envelopes must satisfy a higher proof-of-work difficulty, advertised as `powBitsSealed` in the relay's [`GET /info`](/api/relay-info) response (typically two bits above the standard tier, which quadruples the work). Anonymity is paid for in computation: flooding anonymously costs more than flooding with an identity, and neither reveals anything to the relay.
+
+## Sealed channels
+
+Any channel can opt into sealed mode by checking **sealed** in the create dialog; the choice is recorded in the channel's founding event and delivered to every member inside their Welcome. In a sealed channel:
+
+- Messages, reactions, edits, deletions, and moderation events ride sealed envelopes.
+- The channel's creation event is sealed too — the channel's stable UUID never appears on the wire, from its very first envelope.
+- Membership operations (adds, bans) ride sealed envelopes under the pre-commit epoch's tag. A relay cannot see that a membership change occurred, let alone who was added or ejected — yet a [ban still cryptographically ejects the member](/guides/moderation#bans-are-cryptographic-not-just-social).
+- The periodic [self-update ratchet](/security/encryption-model#ratchet-healing-self-updates) advances the epoch — and rotates the tag — even when membership is static, so long-lived channels do not accumulate a linkable tail of traffic on one tag.
+
+The trade-off is spam economics: sealed traffic pays the higher PoW tier per message. For most communities the standard mode's leak — the relay seeing which device DIDs write to which stable channel ID — is acceptable; sealed mode is there when it is not.
+
+## What sealed mode does not hide
+
+Stated plainly, because honest scope is part of the design:
+
+- **Timing, frequency, and size.** A relay observes when envelopes arrive and how big they are. Sustained traffic analysis can suggest activity patterns even without attribution.
+- **Welcome deliveries.** Adding a member sends a `KeySeal` envelope to their public inbox stream. An observer learns that *someone* invited that user to *something* at that time — not what, not who.
+- **The directory.** Identity announcements, device authorizations, and KeyPackages are signed plaintext by design. Participation in the network is public; participation in any particular conversation is not.
