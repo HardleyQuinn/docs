@@ -1,0 +1,76 @@
+---
+title: "Creating and Managing Channels in EvilChat"
+sidebarTitle: "Channels"
+description: "Learn how to create encrypted channels, invite members, and manage channel settings. Each channel uses an end-to-end encrypted RoomKey or MLS group."
+---
+
+Channels are named, persistent, end-to-end encrypted group spaces where any number of members can exchange messages, reactions, and shared media. Every message posted to a channel is encrypted before it leaves your device — the relay stores and forwards opaque ciphertext and never reads a word of your conversation. Creating a channel is instant, and the encryption setup happens automatically in the background.
+
+## Creating a Channel
+
+<Steps>
+  <Step title="Click the + button">
+    In the left sidebar, click the **+** button next to the Channels heading. The new-channel dialog opens.
+  </Step>
+  <Step title="Enter a name">
+    Type a name for your channel. Channel names are visible to members but the name itself is also encrypted in transit — it is only visible to people who hold the channel's RoomKey or belong to its MLS group.
+  </Step>
+  <Step title="Confirm">
+    Click **Create**. EvilChat immediately mints a fresh RoomKey (AES-256-GCM) for the channel, or bootstraps an MLS group if the MLS core is available. The channel appears in your sidebar and you are its owner.
+  </Step>
+  <Step title="Invite members">
+    Open the Members panel (the person-list icon in the top bar), search for a peer by display name or DID, and click **Invite**. EvilChat seals the RoomKey (or sends an MLS Welcome) to that peer's inbox stream on the relay.
+  </Step>
+</Steps>
+
+## How Encryption Works
+
+EvilChat supports two channel encryption modes, and the one your channel uses depends on when it was created and whether the optional MLS core is compiled in.
+
+<Tabs>
+  <Tab title="RoomKey (AES-256-GCM)">
+    A **RoomKey** is a 256-bit symmetric key shared with every channel member. Each message is encrypted with AES-256-GCM using that key; the relay sees only the ciphertext. RoomKeys are distributed 1-on-1: the channel owner ECIES-seals a copy to each member's X25519 seal public key and posts it to that member's inbox stream.
+
+    `#general` and `server-control` use static RoomKeys. Key rotation is not automatic in v1 — epoch is fixed at 0. Full forward secrecy requires migrating to MLS.
+  </Tab>
+  <Tab title="MLS (Messaging Layer Security)">
+    Channels created when the `evil-mls` Rust core is available get a proper **MLS group**. MLS provides:
+
+    - **Epoch-based group state** — every add or remove triggers a key update (Commit), so new keys are not derived from old ones.
+    - **Cryptographic membership** — banning a member triggers a Commit that ejects them from the group; they cannot decrypt future messages even if they retain old ciphertext.
+    - **Forward secrecy** — each epoch uses independently derived keying material.
+
+    New members receive an MLS **Welcome** message sealed to their inbox. The Welcome carries enough state to join the group at the current epoch.
+  </Tab>
+</Tabs>
+
+## Joining a Channel
+
+You cannot browse or request to join channels — you must be explicitly invited. When a channel owner (or moderator) invites you, the relay delivers a **KeySeal** envelope to your personal inbox stream. That envelope contains either a `RoomKeyDistributedEvent` (for RoomKey channels) or an `MlsWelcomeEvent` (for MLS channels), both sealed to your X25519 seal key.
+
+Your client decrypts the sealed envelope and registers the key or Welcome. From that point, all past and future channel traffic in your local archive becomes readable, and new messages decrypt in real time.
+
+<Note>
+**"Park, don't drop."** If a channel message arrives at your client before the RoomKey or MLS Welcome does — for example, because the relay delivered them out of order — the ciphertext is stored locally and replayed automatically the moment the key lands. You will never see a permanently undecryptable message because of a race condition.
+</Note>
+
+## Channel Members
+
+Open the **Members panel** by clicking the person-list icon in the top bar of any channel. The panel shows:
+
+- A count of members who hold the channel key.
+- Which members are currently online (green dot) vs. offline.
+- Per-member actions: **DM**, **Grant Moderator**, **Ban** (if you have authority).
+
+## Naming Conventions
+
+Two channels have special roles and are created automatically when a community is first set up:
+
+<CardGroup cols={2}>
+  <Card title="#general" icon="hash">
+    The default channel every member joins automatically on first sync. Owned by the first user to initialize the community.
+  </Card>
+  <Card title="server-control" icon="shield">
+    The community-wide moderation stream. Ban events posted here apply across all channels, not just one. See the [Moderation guide](/guides/moderation) for details.
+  </Card>
+</CardGroup>

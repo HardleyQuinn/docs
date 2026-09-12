@@ -1,0 +1,215 @@
+---
+title: "evilvault CLI Command Reference"
+sidebarTitle: "CLI Reference"
+description: "Complete reference for the evilvault CLI: init, run, config, token, and status commands with flags and examples."
+---
+
+The `evilvault` command-line tool manages your vault daemon. Use it to initialize a new vault, start the server, inspect configuration, rotate the bearer token, and check daemon status. The binary is both the CLI and the daemon — the first argument selects which mode to run. You only need to run `init` once per device; after that, `run` is the only command you need to keep the vault online.
+
+---
+
+## `evilvault init`
+
+Set up this device as a vault. Generates a `config.json` file, creates the data directory, mints a fresh bearer token, and prints the pairing URL and token to copy into EvilChat.
+
+```bash
+evilvault init [--port <port>] [--dir <data-dir>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `5200` | Port the daemon will listen on |
+| `--dir` | `~/.config/evilvault/data` | Directory for `vault.db` |
+
+Config is written to:
+- **macOS / Linux:** `~/.config/evilvault/config.json`
+- **Windows:** `%AppData%\evilvault\config.json`
+
+<Note>
+  `init` refuses to run if a `config.json` already exists. To re-initialize, delete the existing config file first — but be aware this does not delete your `vault.db` or Storage Key.
+</Note>
+
+### Example
+
+```bash
+evilvault init --port 5200 --dir /var/lib/evilvault/data
+```
+
+```
+vault initialized.
+
+  config : /home/alice/.config/evilvault/config.json
+  data   : /var/lib/evilvault/data
+  url    : http://localhost:5200
+  token  : 3a7f1c0e9b2d4f6a8e1c3b5d7a9f2e0c4b6d8a1f3e5c7b
+
+paste url + token into EvilChat (Settings → Vault), then: evilvault run
+```
+
+---
+
+## `evilvault run`
+
+Start the vault HTTP server. The daemon listens on the port in your config (or `EVILVAULT_PORT` if set) and serves the `/archive` and `/status` endpoints. This command does **not** daemonize — it blocks in the foreground until interrupted.
+
+```bash
+evilvault run
+```
+
+<Tabs>
+  <Tab title="Background (Linux — systemd)">
+    ```ini
+    # /etc/systemd/system/evilvault.service
+    [Unit]
+    Description=evilvault daemon
+    After=network.target
+
+    [Service]
+    ExecStart=/usr/local/bin/evilvault run
+    Restart=on-failure
+    User=alice
+    Environment=EVILVAULT_PORT=5200
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    ```bash
+    sudo systemctl enable --now evilvault
+    ```
+  </Tab>
+  <Tab title="Background (macOS — Homebrew Services)">
+    ```bash
+    brew services start evilvault
+    ```
+  </Tab>
+  <Tab title="Foreground (development)">
+    ```bash
+    evilvault run
+    # evilvault listening on http://localhost:5200 (data: /home/alice/.config/evilvault/data)
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## `evilvault config get`
+
+Print the current configuration. By default, the token is hidden; pass `token` explicitly to reveal it.
+
+```bash
+evilvault config get [key]
+```
+
+| Key | Description |
+|-----|-------------|
+| _(omitted)_ | Print `port` and `dir`; token is shown as `(hidden)` |
+| `port` | Print the configured port number |
+| `dir` | Print the data directory path |
+| `token` | Print the bearer token value |
+
+### Example
+
+```bash
+evilvault config get
+# port = 5200
+# dir  = /home/alice/.config/evilvault/data
+# token = (hidden — `config get token` to show)
+
+evilvault config get token
+# token = 3a7f1c0e9b2d4f6a8e1c3b5d7a9f2e0c4b6d8a1f3e5c7b
+```
+
+---
+
+## `evilvault config set port <n>`
+
+Change the port the daemon listens on. Requires a daemon restart to take effect.
+
+```bash
+evilvault config set port 9000
+# saved. restart the daemon to apply.
+```
+
+---
+
+## `evilvault config set dataDir <path>`
+
+Change the directory where `vault.db` is stored. Requires a daemon restart. The new directory is created automatically on next start if it does not exist.
+
+```bash
+evilvault config set dataDir /mnt/external/evilvault
+# saved. restart the daemon to apply.
+```
+
+<Warning>
+  Changing `dataDir` does **not** move your existing `vault.db`. Copy the database file to the new location manually before restarting the daemon, or your archive history will appear empty.
+</Warning>
+
+---
+
+## `evilvault token rotate`
+
+Generate a new 48-character hex bearer token (24 random bytes) and save it to `config.json`. The old token remains valid until the daemon is restarted.
+
+```bash
+evilvault token rotate
+# new token: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2
+# update EvilChat's vault settings; old token is dead on daemon restart.
+```
+
+After rotating, paste the new token into EvilChat under **Settings → Vault** and restart the daemon.
+
+---
+
+## `evilvault status`
+
+Query the running daemon for health and storage statistics. Connects to `http://localhost:<port>` using the token from `config.json`.
+
+```bash
+evilvault status
+```
+
+### Example output (daemon running)
+
+```
+vault: http://localhost:5200 — UP
+  archived : 14 382 events
+  db size  : 42.7 KiB
+  uptime   : since 2024-06-10 08:00:00Z
+```
+
+### Example output (daemon not running)
+
+```
+vault: http://localhost:5200 — DOWN (start it with: evilvault run)
+```
+
+---
+
+## Config file
+
+`config.json` is a plain JSON file written by `evilvault init` and updated by `config set` and `token rotate`. You can edit it manually, but prefer the CLI commands to avoid syntax errors.
+
+```json
+{
+  "Port": 5200,
+  "DataDir": "/home/alice/.config/evilvault/data",
+  "Token": "3a7f1c0e9b2d4f6a8e1c3b5d7a9f2e0c4b6d8a1f3e5c7b"
+}
+```
+
+---
+
+## Environment variable overrides
+
+Environment variables take precedence over `config.json` values. Use them in containerised or orchestrated deployments where you do not want to run `evilvault init`.
+
+| Variable | Config key | Description |
+|----------|-----------|-------------|
+| `EVILVAULT_PORT` | `Port` | Listening port |
+| `EVILVAULT_DATA` | `DataDir` | Path to the data directory containing `vault.db` |
+| `EVILVAULT_TOKEN` | `Token` | Bearer token for API authentication |
+
+<Tip>
+  When all three environment variables are set, `evilvault run` starts without requiring a `config.json` at all — useful for Docker or CI environments where you want zero-touch startup.
+</Tip>

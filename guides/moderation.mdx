@@ -1,0 +1,84 @@
+---
+title: "Channel Moderation: Bans, Moderators, and Authority"
+sidebarTitle: "Moderation"
+description: "EvilChat moderation works via appended cryptographic events. Channel owners can ban members and grant moderator status; all authority is resolved client-side."
+---
+
+EvilChat moderation is built on the same append-only event model as messaging — bans and moderator grants are cryptographic facts appended to the relay stream, not mutable rows in a database. The relay knows nothing about them. Every moderation action is a signed event; every authority check is computed locally by the client at the moment you query the member list or load a channel. This means moderation works offline, converges across all clients without coordination, and produces a complete, tamper-evident audit trail.
+
+## Who Can Moderate
+
+EvilChat has a two-tier moderation hierarchy per channel:
+
+<CardGroup cols={2}>
+  <Card title="Channel Owner" icon="crown">
+    The DID that created the channel. Owners can ban and unban members, grant moderator status, and revoke moderator status. An owner's authority is absolute within their channel.
+  </Card>
+  <Card title="Moderator" icon="shield">
+    A member the owner has explicitly promoted. Moderators can ban and unban members. They **cannot** grant moderator status to other members — there are no transitive grants.
+  </Card>
+</CardGroup>
+
+Regular members have no moderation authority.
+
+## Banning a Member
+
+Banning a member appends a `MemberBannedEvent` to the channel stream. The banned member's future messages are rejected by other clients' projections; they cannot participate in the channel until unbanned.
+
+<Steps>
+  <Step title="Open the Members panel">
+    Click the **person-list icon** in the channel's top bar.
+  </Step>
+  <Step title="Select the member">
+    Click the member's name or avatar to expand their profile card.
+  </Step>
+  <Step title="Ban">
+    Click **Ban from channel** (or **Server ban** to apply the ban community-wide — see [Server-Wide Bans](#server-wide-bans) below). Confirm when prompted.
+  </Step>
+</Steps>
+
+**To lift a ban**, follow the same steps and click **Unban**. This appends a new `MemberBannedEvent` with `Lifted: true`. Because authority is evaluated at query time using the highest `(Timestamp, EventId)` among valid ban events for the target, the unban wins deterministically regardless of the order events arrive on other clients.
+
+## Granting Moderator Status
+
+<Steps>
+  <Step title="Open the Members panel">
+    Click the person-list icon in the channel top bar.
+  </Step>
+  <Step title="Select the member">
+    Click the member you want to promote.
+  </Step>
+  <Step title="Grant moderator">
+    Click **Grant Moderator**. This appends a `ModeratorGrantedEvent` signed by you (the owner).
+  </Step>
+</Steps>
+
+To **revoke** moderator status, follow the same steps — the button shows **Revoke Moderator** for existing moderators. This appends a `ModeratorGrantedEvent` with `Revoked: true`. Only channel-owner–authored grant/revoke events count; moderators cannot promote others.
+
+## How Authority is Resolved
+
+No server validates moderation events. Instead, each client independently evaluates authority at **query time** — when it renders the member list, processes a message, or checks whether a ban is in effect.
+
+The resolution algorithm:
+
+1. For each `(channel, target)` pair, collect all `MemberBannedEvent` records.
+2. Filter to only those whose `AuthorDid` was the channel owner **or** an effective moderator **at the time of that event's winning position** (determined by `(Timestamp, EventId)`).
+3. The surviving event with the highest `(Timestamp, EventId)` is the current ban state.
+
+This means:
+- **Out-of-order delivery is safe.** If a moderator-grant event arrives after a ban event issued by that same moderator, the projection re-evaluates and the ban is correctly validated retroactively.
+- **There is no global lock.** Multiple clients compute the same result from the same event stream — convergence is guaranteed by the deterministic sort key.
+
+<Note>
+The relay has no knowledge of bans whatsoever. Bans are purely client-side projections derived from the event stream. A banned member can still technically post signed envelopes to the relay — but every client that has processed the ban event will silently discard those envelopes when projecting the channel view.
+</Note>
+
+## Server-Wide Bans
+
+For serious situations — spam, abuse, or bad actors who should be removed from the entire community — you can issue a **server ban** instead of a per-channel ban. Server bans are `MemberBannedEvent` records posted to the special **`server-control`** channel stream rather than an individual channel's stream.
+
+Clients that project the `server-control` stream apply those bans across every channel simultaneously. The `server-control` channel is visible only to the community owner and moderators who have been granted access to it.
+
+<Warning>
+Server bans are as final as channel bans — they can be lifted with a `Lifted: true` event, but until lifted, the banned DID cannot participate in any channel in the community. Use server bans deliberately.
+</Warning>

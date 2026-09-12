@@ -1,0 +1,64 @@
+---
+title: "EvilChat: Decentralized E2EE Messaging on the EVIL Protocol"
+sidebarTitle: "Introduction"
+description: "Learn what EvilChat is, how it differs from traditional chat apps, and why decentralized identity and relay-blind encryption matter."
+---
+
+EvilChat is a decentralized, end-to-end encrypted chat application built on the **EVIL** (Event Verified Immutable Ledger) protocol. Traditional messaging platforms centralize identity — you are a username in a database, authenticated by a password the server holds. EvilChat discards that model entirely. Your identity is a self-sovereign Ed25519 keypair that your device generates and never shares. Your messages are AES-256-GCM ciphertext that only the intended recipients can decrypt. The servers in the middle — the relays — are deliberately blind: they receive opaque signed envelopes, assign a monotonic offset, and serve them back in chronological order. They run no business logic, verify no signatures, and read no content. Every feature of EvilChat — message history, reactions, edits, deletions, bans, moderator grants — is an event appended to an immutable log and projected into a local read model on your device.
+
+## What Makes EvilChat Different
+
+Most chat apps trade privacy for convenience: your messages live in plaintext on a company's servers, your account is tied to a phone number or email, and the provider can read, filter, or delete anything. EvilChat makes different trade-offs:
+
+- **No accounts.** Identity is a keypair. There is no registration flow, no password to reset, and no central authority that can lock you out.
+- **Relay-blind encryption.** Relays store ciphertext and nothing else. Even if a relay is compromised or subpoenaed, there is no plaintext to hand over.
+- **Event-sourced state.** All state — channel membership, message history, bans, reactions — is derived from an append-only log of signed, encrypted events. Clients project state locally; the relay stores facts.
+- **Sealed-sender DMs.** Direct messages use a per-message ephemeral outer key so the relay cannot determine who sent a DM, only that one was sent.
+
+## Core Concepts
+
+<CardGroup cols={2}>
+  <Card title="Identity (DID + Keypair)" icon="fingerprint">
+    Your identity is an Ed25519 keypair generated on your device. Your DID is `did:evil:<base64url(pubkey)>`. You also hold an X25519 key that others use to seal RoomKeys to you. A root key signs device subkeys — your root key signs only device authority delegations.
+  </Card>
+  <Card title="Relay (Dumb Pipe)" icon="network-wired">
+    A relay accepts signed envelopes via `POST /events`, assigns a monotonic arrival offset, and serves them via `GET /events?since=&limit=`. It checks size, PoW difficulty, and per-DID rate limits — nothing more. It never verifies signatures or inspects payloads.
+  </Card>
+  <Card title="Channels (E2EE with RoomKey or MLS)" icon="lock">
+    Channel messages are encrypted with an AES-256-GCM RoomKey sealed individually to each member (Sender Key model), or with full MLS group encryption for new channels. The relay sees only ciphertext. Moderation — bans, moderator grants — is enforced client-side at query time.
+  </Card>
+  <Card title="Vault (Permanent Archive)" icon="database">
+    The optional `evilvault` daemon is a self-hosted CLI + HTTP server that receives Storage-Key-encrypted records from your client and stores them in a local SQLite database. It never holds decryption keys. You control the storage, the token, and the retention policy.
+  </Card>
+</CardGroup>
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="End-to-End Encrypted Channels" icon="shield-halved">
+    Every channel message is encrypted before it leaves your device. New members receive their RoomKey via a sealed `KeySeal` envelope addressed to their inbox stream.
+  </Card>
+  <Card title="Sealed-Sender Direct Messages" icon="envelope">
+    DMs use a per-message ephemeral outer keypair. The relay sees only that a `Sealed` envelope was posted — it cannot identify the sender.
+  </Card>
+  <Card title="Reactions, Edits & Deletes" icon="pen-to-square">
+    Reactions, message edits, and deletions are appended facts, not mutations. Edits converge on the highest `(Timestamp, EventId)` pair; a deletion tombstone prevents a late `MessageSent` from resurrecting a deleted message.
+  </Card>
+  <Card title="Moderation" icon="gavel">
+    Channel owners can ban/unban members and grant moderator status. Authority is resolved client-side at query time — out-of-order grant and ban events still converge correctly.
+  </Card>
+  <Card title="Command Palette" icon="magnifying-glass">
+    Press **⌘K** (or **Ctrl+K**) anywhere in the app to open the command palette. Create channels, switch conversations, or trigger actions without touching the mouse.
+  </Card>
+  <Card title="Dark & Light Theme" icon="circle-half-stroke">
+    EvilChat supports both dark and light modes, styled with the in-house Jinx design system. Your preference is stored locally.
+  </Card>
+</CardGroup>
+
+## The EVIL Protocol
+
+<Note>
+  **EVIL** stands for **Event Verified Immutable Ledger**. The protocol defines the wire format (`SignedEnvelope`), the five envelope kinds, the proof-of-work stamp, the canonical signature preimage, and the set of architecture rules every compliant client and relay must follow. The core rules are: relays run zero business logic; signatures are verified before decryption; out-of-order ciphertext is parked and replayed when keys arrive; cursors advance by relay offset, never by author-asserted timestamps; and the Vault archives Storage-Key-encrypted plaintext, never transient network ciphertext. These rules together guarantee that the event log is an authoritative, tamper-evident source of truth that any client can independently project.
+</Note>
+
+The full EVIL stack in EvilChat includes Ed25519 device-subkey identity (the root key signs only device authority delegations), MLS group encryption via the Rust `evil-mls` core (bans cryptographically eject members at the MLS layer), sealed-sender DMs, PoW conformance, per-author hash chaining with gap detection, and the self-hostable `evilvault` archive daemon with hydration support.

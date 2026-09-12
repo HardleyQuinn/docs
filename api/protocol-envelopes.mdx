@@ -1,0 +1,213 @@
+---
+title: "EVIL Protocol Wire Format: Signed Envelopes"
+sidebarTitle: "Envelopes"
+description: "The SignedEnvelope is the only thing that travels the EVIL network. Learn the wire format, envelope kinds, canonical encoding, PoW stamping, and stream routing."
+---
+
+Every message, key delivery, identity announcement, and moderation event in EvilChat travels as a `SignedEnvelope` — a signed, optionally encrypted wrapper that the relay stores as opaque bytes. The relay never inspects the payload, never decrypts anything, and performs only mechanical admission checks: size, proof-of-work difficulty, and rate limits. All semantic meaning lives inside the envelope and is reconstructed entirely client-side after signature verification and decryption.
+
+---
+
+## SignedEnvelope Fields
+
+The `SignedEnvelope` record is the single wire type for all protocol traffic. Every field below is present in every envelope, regardless of kind.
+
+<ResponseField name="eventId" type="string (UUID)" required>
+  Globally unique identifier for this envelope, minted by the author. Used as a stable reference for deduplication, chain-gap detection, and conflict resolution tiebreaking.
+</ResponseField>
+
+<ResponseField name="kind" type="integer (0–4)" required>
+  Determines how the relay routes the envelope and how clients process the `payload`. See [Envelope Kinds](#envelope-kinds) for the full table.
+</ResponseField>
+
+<ResponseField name="authorDid" type="string" required>
+  The claimed author's DID (`did:evil:<base64url(pubkey)>`). For `Kind = Sealed` envelopes this is an ephemeral per-message key — it authenticates the outer transport layer only, not the real sender. The real author DID is inside the decrypted payload. For all other kinds, this must match the key that produced `signature`.
+</ResponseField>
+
+<ResponseField name="timestamp" type="long (unix seconds)" required>
+  Author-asserted wall-clock time. **Display only — never used for event ordering.** A malicious client can set this to any value. The relay's append offset is the only trustworthy ordering signal.
+</ResponseField>
+
+<ResponseField name="streamId" type="string (UUID)" required>
+  Opaque routing key. Determines which logical stream this envelope belongs to. Clients subscribe to specific stream IDs to receive channel traffic, directory announcements, and inbox deliveries. See [Stream Routing](#stream-routing) for well-known values.
+</ResponseField>
+
+<ResponseField name="prevEventHash" type="string (base64)" required>
+  SHA-256 hash of the previous envelope in the author's chain, enabling clients to detect gaps in delivery. All-zeros in v1 — hash chaining is reserved and the field is kept on the wire so the format is stable when chaining activates.
+</ResponseField>
+
+<ResponseField name="powNonce" type="long" required>
+  The mined proof-of-work nonce. Excluded from the Ed25519 signature preimage and the AEAD associated data so that envelopes can be re-mined (e.g., after a relay raises its difficulty) without invalidating the signature or breaking the chain hash. Zero in v1 deployments with `PowBits = 0`.
+</ResponseField>
+
+<ResponseField name="payload" type="string (base64)" required>
+  The envelope body. For `Kind = Identity` envelopes, this is plaintext UTF-8 JSON containing the domain event. For all other kinds, this is ciphertext whose format depends on `kind`. The payload is bound to the canonical header via AEAD associated data on encrypted kinds, preventing ciphertext transplant attacks.
+</ResponseField>
+
+<ResponseField name="signature" type="string (base64)" required>
+  Ed25519 signature over `CanonicalCodec.SignaturePreimage(envelope)` — the fixed binary encoding of the canonical header fields concatenated with the payload bytes. Verified before any payload is processed. `PowNonce` is excluded from the preimage.
+</ResponseField>
+
+---
+
+## Envelope Kinds
+
+| Value | Name | Payload | Used for |
+|-------|------|---------|----------|
+| `0` | `Identity` | Plaintext domain-event JSON | Signed-plaintext events on the public directory stream — the sanctioned exception to ciphertext-only, required so peers can be verified before any session keys exist |
+| `1` | `Encrypted` | AES-256-GCM ciphertext (RoomKey) | Channel messages, edits, deletions, reactions, bans, and moderator grants in classic RoomKey channels |
+| `2` | `KeySeal` | ECIES-sealed ciphertext | RoomKey material (`RoomKeyDistributed`) and MLS Welcomes (`MlsWelcomeEvent`) addressed to a single recipient's inbox stream |
+| `3` | `Mls` | TLS-serialized MLS message | Application messages and handshake commits on MLS channels; the MLS stack distinguishes them internally |
+| `4` | `Sealed` | Sealed-sender ciphertext | Direct messages where the relay must not learn the real sender's identity |
+
+<Note>
+**Kind = Sealed** envelopes use a fresh ephemeral Ed25519 keypair as `authorDid` for every message. The relay sees the ephemeral key, not your real DID. Your true DID, your inner signature, and your `PrevEventHash` live inside the ciphertext (in the `SealedInner` structure) and are verified only by the recipient after decryption. This is EvilChat's sealed-sender design for DMs.
+</Note>
+
+<Info>
+**Kind = Identity** envelopes are the only plaintext events in the protocol. They are necessary because RoomKey and MLS encryption require knowing a peer's `SealPublicKey` before any secure channel can be established — you need a way to look up keys before you have keys. The directory stream is the bootstrap layer that makes E2EE discoverable.
+</Info>
+
+---
+
+## Canonical Encoding
+
+JSON serialization is not canonical — field order and whitespace are implementation-defined, so the same logical object can produce different byte sequences in different serializers. Ed25519 signatures and AEAD associated data require a byte-stable input. EvilChat solves this with `CanonicalCodec`, a fixed binary encoding computed as follows:
+
+**Signature preimage** — the bytes `Ed25519.Sign` covers:
+
+```
+EventId       16 bytes  (Guid, as written by Guid.TryWriteBytes)
+Kind           1 byte   (uint8)
+AuthorDid    [4 + N] bytes  (int32-LE length prefix + UTF-8 bytes)
+Timestamp      8 bytes  (int64-LE)
+StreamId      16 bytes  (Guid)
+PrevEventHash [4 + N] bytes  (int32-LE length prefix + raw bytes)
+Payload       [4 + N] bytes  (int32-LE length prefix + raw bytes)
+```
+
+**AEAD associated data** (for `Kind = Encrypted`, `KeySeal`, `Mls`, `Sealed`) — the canonical header only, identical to the preimage minus the trailing payload field. Binding the header as AAD ensures a ciphertext sealed under one `(StreamId, EventId, AuthorDid, …)` tuple cannot be replayed under a different header.
+
+**`PowNonce` is excluded from both the signature preimage and the AAD.** This is intentional: mining happens after signing, and re-mining after a relay difficulty change must not invalidate an already-valid signature or chain hash.
+
+<Tabs>
+  <Tab title="Compute signature preimage">
+    ```csharp
+    // Pseudo-code matching CanonicalCodec.SignaturePreimage
+    var ms = new MemoryStream();
+    ms.Write(envelope.EventId.ToByteArray());           // 16 bytes
+    ms.WriteByte((byte)envelope.Kind);                  // 1 byte
+    WriteBytes(ms, Encoding.UTF8.GetBytes(envelope.AuthorDid)); // 4+N
+    WriteInt64LE(ms, envelope.Timestamp);               // 8 bytes
+    ms.Write(envelope.StreamId.ToByteArray());          // 16 bytes
+    WriteBytes(ms, envelope.PrevEventHash);             // 4+N
+    WriteBytes(ms, envelope.Payload);                   // 4+N
+    // PowNonce deliberately excluded
+    return ms.ToArray();
+    ```
+  </Tab>
+  <Tab title="Compute AEAD AAD">
+    ```csharp
+    // Pseudo-code matching CanonicalCodec.HeaderAad
+    var ms = new MemoryStream();
+    ms.Write(envelope.EventId.ToByteArray());
+    ms.WriteByte((byte)envelope.Kind);
+    WriteBytes(ms, Encoding.UTF8.GetBytes(envelope.AuthorDid));
+    WriteInt64LE(ms, envelope.Timestamp);
+    ms.Write(envelope.StreamId.ToByteArray());
+    WriteBytes(ms, envelope.PrevEventHash);
+    // Payload excluded — it IS the ciphertext being bound
+    return ms.ToArray();
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Stream Routing
+
+Relays store and serve envelopes by `StreamId`. Clients subscribe to stream IDs to receive the events they care about. The following stream IDs are well-known public conventions among all EvilChat clients; the relay treats them as opaque UUIDs.
+
+<CardGroup cols={2}>
+  <Card title="Directory Stream" icon="address-book">
+    **`00000000-0000-0000-0000-00000000d1ec`**
+
+    The public identity and KeyPackage announcement stream. All `IdentityAnnounced`, `DeviceAuthorized`, `DeviceRevoked`, and `KeyPackagePublished` events appear here as signed plaintext (`Kind = Identity`). Subscribe to this stream to bootstrap peer discovery.
+  </Card>
+  <Card title="Inbox Stream" icon="envelope">
+    **`SHA256("evilchat-inbox-v1:" + did)[0:16]`**
+
+    Per-DID inbox for 1-on-1 `KeySeal` deliveries. Channel owners send `RoomKeyDistributed` envelopes here; group creators send `MlsWelcomeEvent` envelopes here. Derived deterministically from your DID — no coordination needed to know where to deliver sealed messages.
+  </Card>
+  <Card title="DM Channel Stream" icon="comments">
+    **`SHA256("evilchat-dm-v1:" + sorted(didA, didB))[0:16]`**
+
+    Deterministic bilateral channel UUID for a 1-on-1 DM. Both participants derive the same UUID independently by sorting their DIDs lexicographically and hashing with the `evilchat-dm-v1:` prefix and a `|` separator. Whoever initiates the conversation first effectively mints the channel.
+  </Card>
+  <Card title="Group Channel Streams" icon="users">
+    **Opaque UUIDs minted at creation**
+
+    Regular group channels use randomly generated UUIDs written in the `ChannelCreated` event. Clients learn a channel's `StreamId` from the `ChannelCreated` or `RoomKeyDistributed` events they receive — there is no global channel registry.
+  </Card>
+</CardGroup>
+
+<Warning>
+Relays can observe which stream IDs a DID writes to, which can leak participation metadata for group channels (though not DM content). Rotating stream tags as a traffic-analysis mitigation is a planned enhancement. For now, be aware that relay operators learn which channels you are active in.
+</Warning>
+
+---
+
+## Proof-of-Work
+
+Relays use proof-of-work to rate-limit event submission without requiring accounts. When a relay's `GET /info` response reports `powBits > 0`, every submitted envelope must include a mined `PowNonce` satisfying the difficulty target.
+
+**PoW hash formula:**
+
+```
+PowHash = SHA256( SignaturePreimage(e) ‖ e.Signature ‖ e.PowNonce )
+```
+
+The hash must have at least `powBits` leading zero bits. The relay verifies this from the envelope bytes alone — no domain knowledge required.
+
+**Mining happens after signing.** The workflow is:
+
+<Steps>
+  <Step title="Build and encrypt the payload">
+    Serialize the domain event, encrypt it with the channel RoomKey or MLS secrets, and write it into `Payload`.
+  </Step>
+  <Step title="Sign the canonical preimage">
+    Compute `CanonicalCodec.SignaturePreimage(envelope)` and produce an Ed25519 `Signature`. The `PowNonce` field is zero at this point.
+  </Step>
+  <Step title="Mine the nonce">
+    Iterate `PowNonce` from `0` upward. For each candidate, compute `SHA256(preimage ‖ signature ‖ nonce)` and test whether the leading zero bit count meets `powBits`. The first nonce that satisfies the target is written into the envelope.
+  </Step>
+  <Step title="Submit the envelope">
+    Send the completed envelope to `POST /events`. The relay performs the same PoW check and rejects envelopes that do not meet the current difficulty.
+  </Step>
+</Steps>
+
+Because `PowNonce` is excluded from the signature and from the chain hash, an envelope can be **re-mined** (e.g., after a relay raises its difficulty or on an outbox retry) without producing a new signature or breaking any chain links. Re-mining a legitimate envelope only donates computational work; it does not change the envelope's identity.
+
+<Tip>
+The relay publishes two difficulty values in `GET /info`: `powBits` for standard envelopes and `powBitsSealed` reserved for sealed-sender envelopes (equal to `powBits` in v1). Check both when constructing DMs.
+</Tip>
+
+---
+
+## Chain Hash
+
+Each envelope has a cryptographic identity — its **envelope hash** — that is stable across re-mining and is what `PrevEventHash` references in future envelopes from the same author.
+
+```
+EnvelopeHash = SHA256( SignaturePreimage(e) ‖ e.Signature )
+```
+
+`PowNonce` is deliberately excluded. This means:
+- An author can mine a higher-difficulty nonce for an envelope already chained by a successor without breaking the chain.
+- Relays and verifiers compute the same chain hash regardless of the nonce value.
+
+Clients detect delivery gaps by comparing the `PrevEventHash` in an arriving envelope against the `EnvelopeHash` of the last event they have received from that author on the same stream. A mismatch signals a gap, which may mean envelopes are still in transit or have been withheld by the relay.
+
+<Note>
+In v1, `PrevEventHash` is always zero-filled — hash chaining is reserved for a future protocol version. The field exists on the wire so activating chaining in a later version does not require a wire-format break. Clients should not rely on gap detection until chaining is enabled.
+</Note>

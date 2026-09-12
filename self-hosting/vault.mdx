@@ -1,0 +1,267 @@
+---
+title: "Set Up the evilvault Archive Daemon"
+sidebarTitle: "Vault"
+description: "Install and run evilvault, the self-hosted daemon that stores your complete EvilChat history re-encrypted under a Storage Key only you hold."
+---
+
+The EvilChat client can relay-prune old ciphertext, but you can preserve your complete message history by pairing with evilvault — a lightweight daemon that archives every event re-encrypted under a Storage Key that never leaves your device. Unlike the relay, which stores opaque ciphertext it cannot read, the vault stores events that have already been decrypted and re-encrypted specifically for you. The result is a personal, searchable archive that survives relay pruning, relay outages, and relay operator changes — all without any third party ever seeing your plaintext.
+
+## How the Vault Works
+
+When the EvilChat client receives an encrypted envelope from the relay, it decrypts the payload using the appropriate session key (RoomKey or MLS group key). Before displaying the message, it immediately re-encrypts the plaintext under your **Storage Key** — a 256-bit AES-256-GCM key derived from your device and stored only on your device — and ships the `nonce ‖ ciphertext+tag` blob to evilvault via a local HTTP call authenticated with a pairing token.
+
+The vault stores `VaultRecord` entries: each record carries a stream ID, a timestamp, the nonce, and the ciphertext. The vault **never sees plaintext** and **never holds any decryption key material**. If an attacker compromises the vault's database, they gain only ciphertext that is meaningless without your Storage Key.
+
+<Info>
+  The vault listens on `localhost` by default. It is designed to run on the same machine as your EvilChat client, not as a shared server. Do not expose it on a public interface without additional network controls.
+</Info>
+
+## Installation
+
+<Tabs>
+  <Tab title="macOS (Homebrew)">
+    Add the EvilChat tap and install the formula:
+
+    ```bash
+    brew tap hrdlyquinn/evilchat
+    brew install evilvault
+    ```
+
+    Homebrew installs the `evilvault` binary and registers a background service definition. To upgrade:
+
+    ```bash
+    brew upgrade evilvault
+    ```
+  </Tab>
+
+  <Tab title="Linux">
+    Download the latest `linux-x64` tarball from the [GitHub releases page](https://github.com/hrdlyquinn/evilchat/releases), then extract and install the binary:
+
+    ```bash
+    # Replace x.y.z with the current release version
+    tar -xzf evilvault-x.y.z-linux-x64.tar.gz
+    sudo mv evilvault /usr/local/bin/
+    chmod +x /usr/local/bin/evilvault
+    ```
+
+    Verify the installation:
+
+    ```bash
+    evilvault
+    ```
+  </Tab>
+
+  <Tab title="Windows (winget)">
+    Install from the Windows Package Manager:
+
+    ```powershell
+    winget install EvilChat.Vault
+    ```
+
+    The binary is placed in your `PATH` by the installer. Open a new terminal after installation to pick up the updated `PATH`.
+  </Tab>
+</Tabs>
+
+## First-Time Setup
+
+<Steps>
+  <Step title="Initialize the vault">
+    Run `evilvault init` to create the configuration file and generate a random pairing token:
+
+    ```bash
+    evilvault init
+    ```
+
+    You will see output similar to:
+
+    ```
+    vault initialized.
+
+      config : ~/.config/evilvault/config.json
+      data   : ~/.config/evilvault/data
+      url    : http://localhost:5200
+      token  : 3a9f2b...c04d
+
+    paste url + token into EvilChat (Settings → Vault), then: evilvault run
+    ```
+
+    Keep this token — you will need it to pair your EvilChat client. You can always retrieve it later with `evilvault config get token`.
+
+    You can customize the port and data directory at init time:
+
+    ```bash
+    evilvault init --port 6000 --dir /mnt/archive/evilvault
+    ```
+  </Step>
+
+  <Step title="Start the daemon">
+    Run the daemon in the foreground to verify it starts correctly:
+
+    ```bash
+    evilvault run
+    ```
+
+    The daemon prints its listening address and data path:
+
+    ```
+    evilvault listening on http://localhost:5200 (data: ~/.config/evilvault/data)
+    ```
+
+    Once confirmed, stop it with Ctrl+C and start it as a background service (see [Running as a Service](#running-as-a-service) below).
+  </Step>
+
+  <Step title="Pair with EvilChat">
+    In the EvilChat web or mobile app, open **Settings → Vault**. Enter:
+
+    - **Vault URL**: `http://localhost:5200` (or whatever port you chose)
+    - **Token**: the token printed by `evilvault init`
+
+    The client will call `GET /status` to verify connectivity, then begin shipping archived events in the background.
+  </Step>
+</Steps>
+
+## Running as a Service
+
+<Tabs>
+  <Tab title="macOS (brew services)">
+    Start evilvault as a persistent background service managed by launchd:
+
+    ```bash
+    brew services start evilvault
+    ```
+
+    It will start automatically at login. To stop or restart:
+
+    ```bash
+    brew services stop evilvault
+    brew services restart evilvault
+    ```
+
+    Logs are written to `$(brew --prefix)/var/log/evilvault.log`.
+  </Tab>
+
+  <Tab title="Linux (systemd)">
+    Create a systemd unit file at `/etc/systemd/system/evilvault.service`:
+
+    ```ini
+    [Unit]
+    Description=evilvault — EvilChat archive daemon
+    After=network.target
+
+    [Service]
+    Type=simple
+    User=%i
+    ExecStart=/usr/local/bin/evilvault run
+    Restart=on-failure
+    RestartSec=5
+
+    [Install]
+    WantedBy=default.target
+    ```
+
+    Enable and start the service:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now evilvault
+    sudo systemctl status evilvault
+    ```
+  </Tab>
+
+  <Tab title="Windows">
+    On Windows, use Task Scheduler or NSSM to run `evilvault run` as a background process. With NSSM:
+
+    ```powershell
+    nssm install evilvault "C:\path\to\evilvault.exe" run
+    nssm start evilvault
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration
+
+### Config File Location
+
+| Platform | Path |
+|---|---|
+| macOS / Linux | `~/.config/evilvault/config.json` |
+| Windows | `%AppData%\evilvault\config.json` |
+
+The config directory can be overridden by setting `EVILVAULT_HOME` before running any `evilvault` command.
+
+A typical `config.json` looks like:
+
+```json
+{
+  "Port": 5200,
+  "DataDir": "/home/you/.config/evilvault/data",
+  "Token": "3a9f2b...c04d"
+}
+```
+
+### CLI Configuration
+
+Read the current settings:
+
+```bash
+evilvault config get
+```
+
+Read a specific key:
+
+```bash
+evilvault config get port
+evilvault config get dir
+evilvault config get token
+```
+
+Change a setting (restart the daemon to apply):
+
+```bash
+evilvault config set port 6000
+evilvault config set dir /mnt/archive/evilvault
+```
+
+Rotate the pairing token (the old token is rejected on the next daemon restart):
+
+```bash
+evilvault token rotate
+```
+
+### Environment Variable Overrides
+
+Environment variables override the config file. This is particularly useful for containerized deployments or dev environments where you do not want to run `evilvault init`.
+
+| Variable | Overrides | Description |
+|---|---|---|
+| `EVILVAULT_PORT` | `Port` | TCP port the daemon listens on. |
+| `EVILVAULT_DATA` | `DataDir` | Directory for the SQLite database (`vault.db`). |
+| `EVILVAULT_TOKEN` | `Token` | Bearer token clients must send. |
+| `EVILVAULT_HOME` | Config dir path | Base directory for `config.json`. |
+
+### Vault HTTP API
+
+The daemon exposes three endpoints, all requiring `Authorization: Bearer <token>`:
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/archive` | Accept a JSON array of `VaultRecord` objects (nonce + ciphertext) to store. |
+| `GET` | `/archive?streamId=&fromTs=&toTs=&limit=` | Read archived records for a stream, filtered by timestamp range. |
+| `GET` | `/status` | Returns archived event count, database size in bytes, and daemon start time. |
+
+Check daemon health from the command line:
+
+```bash
+evilvault status
+```
+
+```
+vault: http://localhost:5200 — UP
+  archived : 14382 events
+  db size  : 2048.0 KiB
+  uptime   : since 2025-01-15 09:00:00Z
+```
+
+<Warning>
+  Your Storage Key is derived from your device and is not stored in the vault or anywhere the vault can access. **If you lose your device without a backup, archived events in the vault cannot be decrypted.** Back up your `~/.config/evilvault/data/` directory — and critically, your `profile.json` which holds your identity seed — to offline storage regularly.
+</Warning>

@@ -1,0 +1,137 @@
+---
+title: "Run Your Own EvilChat Relay Server"
+sidebarTitle: "Relay"
+description: "Set up a self-hosted EvilChat relay: a stateless append-only pipe that stores encrypted envelopes without reading them. Configure PoW, rate limits, and retention."
+---
+
+The EvilChat relay is deliberately simple — it accepts signed envelopes, assigns monotonic offsets, and serves bulk sync. It never decrypts, verifies signatures, or evaluates domain logic. Running your own relay means you control who can post to it and where your envelopes land, without any of the privacy trade-offs that come with handing that infrastructure to someone else. Because the relay only performs mechanical checks, self-hosting it is operationally lightweight: no database migrations, no user management, no secrets to rotate.
+
+## Requirements
+
+- **.NET 10 SDK or Runtime** — the relay is a single ASP.NET Core application. Install from [dot.net](https://dot.net) for your platform.
+- A writable directory for the SQLite database (defaults to the directory next to the binary).
+- An open TCP port (default: **5100**).
+
+## Running the Relay
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/hrdlyquinn/evilchat.git
+    cd evilchat
+    ```
+  </Step>
+
+  <Step title="Start the relay in development mode">
+    ```bash
+    dotnet run --project EvilChat.Relay
+    ```
+
+    The relay binds to `http://localhost:5100` by default and creates `relay.db` next to the binary on first launch.
+  </Step>
+
+  <Step title="Verify it's running">
+    ```bash
+    curl -s http://localhost:5100/info | jq
+    ```
+
+    You should see a JSON object describing the relay's current parameters — the same object clients fetch to determine what an admissible envelope costs on this relay.
+  </Step>
+</Steps>
+
+### Default `appsettings.json`
+
+The relay ships with a minimal settings file. All EvilChat-specific configuration lives under the `EvilChat:Relay:*` key hierarchy and can be overridden by environment variables or a production `appsettings.Production.json`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+```
+
+To override settings without editing the file, prefix the key with `EvilChat__Relay__` and export it as an environment variable (ASP.NET Core uses `__` as the hierarchy separator):
+
+```bash
+export EvilChat__Relay__PowBits=16
+export EvilChat__Relay__MaxEnvelopeBytes=32768
+dotnet run --project EvilChat.Relay
+```
+
+## Configuration Reference
+
+All settings are optional. The relay ships with sane defaults suitable for a private or low-traffic instance.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `EvilChat:Relay:DbPath` | `string` | `relay.db` next to binary | Path to the SQLite database that stores envelope bytes and arrival offsets. |
+| `EvilChat:Relay:PowBits` | `int` | `0` (disabled) | Required leading zero bits in the proof-of-work hash. `0` disables PoW entirely. Raise this to resist cheap spam. |
+| `EvilChat:Relay:MaxEnvelopeBytes` | `int` | `65536` (64 KiB) | Hard maximum envelope size in bytes. The relay returns HTTP 413 for anything larger. |
+| `EvilChat:Relay:RateCapacity` | `int` | `30` | Per-DID token bucket capacity. A DID starts with this many tokens and cannot accumulate more. |
+| `EvilChat:Relay:RateRefillPerMinute` | `int` | `30` | Tokens refilled per minute per DID. With defaults, a DID can burst 30 envelopes then sustains 1 every 2 seconds. |
+| `EvilChat:Relay:RetentionSeconds` | `long` | `0` (keep forever) | TTL in seconds after which old envelopes are deleted. `0` means the relay retains envelopes indefinitely. |
+
+### Configuring PoW
+
+Proof-of-work requires clients to compute a nonce such that `SHA256(preimage ‖ signature ‖ nonce)` has at least `PowBits` leading zero bits. Each additional bit doubles the expected work. The relay verifies this check from raw envelope bytes — no domain knowledge required.
+
+```bash
+# Require 16 leading zero bits (~65k hashes on average per envelope)
+export EvilChat__Relay__PowBits=16
+```
+
+<Tip>
+  Start with `PowBits=0` while testing. For a public relay, `PowBits=10–16` is a reasonable spam deterrent that modern clients handle in under a second.
+</Tip>
+
+### Configuring Rate Limits
+
+Rate limiting uses a per-DID token bucket. Each accepted envelope consumes one token; tokens refill at `RateRefillPerMinute / 60` per second up to the bucket capacity.
+
+```bash
+# Tighter rate limit: 10 burst, 10 per minute sustained
+export EvilChat__Relay__RateCapacity=10
+export EvilChat__Relay__RateRefillPerMinute=10
+```
+
+## Connecting Clients
+
+Once your relay is running and accessible, point EvilChat clients at it by setting `EvilChat:Relay:BaseUrl` in their configuration:
+
+```json
+{
+  "EvilChat": {
+    "Relay": {
+      "BaseUrl": "https://relay.example.com"
+    }
+  }
+}
+```
+
+Alternatively, in the EvilChat web app, navigate to **Settings → Relay** and paste your relay's URL. The client will fetch `/info` to negotiate PoW difficulty and envelope limits automatically.
+
+<Note>
+  All clients connecting to the same relay must share the same relay URL to see each other's messages. You can run multiple relays, but envelopes posted to one relay are not automatically mirrored to another.
+</Note>
+
+## What the Relay Checks
+
+The relay implements exactly one gate — `EnvelopeGate` — which applies four purely mechanical checks in order:
+
+| Check | Failure code | Description |
+|---|---|---|
+| **Size** | HTTP 413 | Envelope body exceeds `MaxEnvelopeBytes`. |
+| **Parseability** | HTTP 422 `malformed` | Body cannot be deserialized as a `SignedEnvelope`. |
+| **Proof-of-work** | HTTP 422 `pow` | PoW hash does not meet `PowBits` difficulty (when enabled). |
+| **Rate limit** | HTTP 429 | The sending DID has exhausted its token bucket. |
+
+The relay performs **no signature verification** and **no domain logic**. It does not know whether the AuthorDid in an envelope is real, whether the payload is a message or a key, or which channel an envelope belongs to. That is intentional — the relay's job is to assign offsets and serve bytes.
+
+<Note>
+  Enabling `RetentionSeconds` means the relay will delete old envelopes on a rolling TTL. Clients that have not synced recently may miss those envelopes permanently. The [evilvault daemon](/self-hosting/vault) is the permanent store — pair it with any instance where you want guaranteed long-term archiving.
+</Note>

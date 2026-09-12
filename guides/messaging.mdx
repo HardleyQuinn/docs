@@ -1,0 +1,91 @@
+---
+title: "Sending, Editing, and Reacting to Messages"
+sidebarTitle: "Messaging"
+description: "Learn how to send, edit, delete, and react to messages in EvilChat. All operations are append-only events — edits and deletions are cryptographically auditable."
+---
+
+EvilChat messages are append-only events on an immutable ledger — every action you take (send, edit, delete, react) appends a new signed event to the relay stream rather than mutating anything that already exists. This means there is no such thing as a silent edit or a secretly resurrected message: the full history of every action is cryptographically signed and auditable. What you see in the chat view is a **projection** of that event stream, computed locally by your client.
+
+## Sending a Message
+
+Type your message in the **compose box** at the bottom of the chat window and press **Enter** (or click the **Send** button). The client:
+
+1. Encrypts the `MessageSentEvent` payload with the channel's RoomKey (or via MLS).
+2. Signs the resulting `SignedEnvelope` with your device Ed25519 key.
+3. Posts the envelope to the relay's `POST /events` endpoint.
+4. Displays the message optimistically in your UI while waiting for relay confirmation.
+
+Messages support standard Unicode including emoji. There is no enforced length limit beyond the relay's 64 KiB maximum envelope size.
+
+<Tip>
+**Offline resilience.** If the relay is briefly unreachable — a network hiccup or a relay restart — EvilChat saves your outgoing messages to a local outbox and retries automatically. You will never lose a message you have already typed and submitted.
+</Tip>
+
+## Editing a Message
+
+You can edit any message you authored. Editing appends a `MessageEditedEvent` that references the original message by ID; it does not overwrite any existing data on the relay.
+
+<Steps>
+  <Step title="Open the context menu">
+    Hover over the message you want to edit. Click the **⋯** (more options) button that appears, then select **Edit**.
+  </Step>
+  <Step title="Modify the text">
+    The compose box populates with the current message body. Make your changes.
+  </Step>
+  <Step title="Submit the edit">
+    Press **Enter** or click **Save**. The client appends a signed `MessageEditedEvent` with the new body.
+  </Step>
+</Steps>
+
+The chat view shows the **latest winning edit** — determined by the highest `(Timestamp, EventId)` pair among all edits for that message. This is a deterministic total order, so concurrent edits (unlikely, but possible if you edit from two devices simultaneously) converge identically on every client.
+
+## Deleting a Message
+
+Deleting a message appends a `MessageDeletedEvent` tombstone referencing the target message ID.
+
+<Steps>
+  <Step title="Open the context menu">
+    Hover over the message and click **⋯**, then select **Delete**.
+  </Step>
+  <Step title="Confirm">
+    Confirm the deletion prompt. The tombstone is signed and posted to the relay immediately.
+  </Step>
+</Steps>
+
+<Warning>
+Deletions are **final and permanent**. Because the tombstone always wins — even over a `MessageSentEvent` that arrives late due to network delays — a deleted message cannot be resurrected by resubmitting it. Moderators can also delete messages they have authority over.
+</Warning>
+
+The client projects a "message deleted" placeholder in place of the original content. The tombstone itself remains on the relay as a verifiable fact.
+
+## Reactions
+
+Reactions let you respond to any message with an emoji, without sending a full reply.
+
+<Steps>
+  <Step title="Open the reaction picker">
+    Hover over a message and click the **smiley face** (😊) icon that appears on the right. The reaction picker opens.
+  </Step>
+  <Step title="Choose an emoji">
+    Six quick-access emoji are shown immediately. To find something specific, click **All** to open the full searchable grid of approximately **1,500 CLDR emoji**, browsable by category or by typing a search term.
+  </Step>
+  <Step title="Toggle a reaction off">
+    Click an existing reaction badge below a message to remove your reaction. This appends a `MessageReactedEvent` with `Removed: true`.
+  </Step>
+</Steps>
+
+Under the hood, each add and remove is a signed `MessageReactedEvent`. The projection determines the current state of each `(message, author, emoji)` tuple by picking the event with the highest `(Timestamp, EventId)` — so add/remove sequences from different devices, arriving in any order, converge identically on all clients.
+
+## The Message Context Menu
+
+The full context menu (the **⋯** button) contains all actions available for a given message:
+
+<Accordion title="Context menu actions">
+  | Action | Who can use it |
+  |--------|---------------|
+  | **Edit** | Message author only |
+  | **Delete** | Message author, channel moderators, channel owner |
+  | **React** | Any channel member |
+  | **Ban member** | Channel owner or moderator (see [Moderation](/guides/moderation)) |
+  | **Copy message ID** | Any channel member (useful for support and bug reports) |
+</Accordion>

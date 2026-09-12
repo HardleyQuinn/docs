@@ -1,0 +1,76 @@
+---
+title: "Navigate EvilChat Fast with the Command Palette"
+sidebarTitle: "Command Palette"
+description: "The EvilChat command palette (⌘K on Mac, Ctrl+K on Windows/Linux) lets you jump to channels, find people, search messages, and trigger actions instantly."
+---
+
+The command palette is EvilChat's power-user shortcut — a spotlight-style search bar that puts every channel, person, message, and app action one keystroke away. Press **⌘K** on Mac or **Ctrl+K** on Windows and Linux to open it from anywhere in the app. Because all search is performed against your local database, the palette works entirely offline: no relay connection required, no round-trip latency, no results throttled by server load.
+
+## Opening the Palette
+
+You have two ways to open the command palette:
+
+<CardGroup cols={2}>
+  <Card title="Keyboard shortcut" icon="keyboard">
+    Press **⌘K** (Mac) or **Ctrl+K** (Windows / Linux) from anywhere in the app. This is the fastest path and works even when focus is inside the compose box.
+  </Card>
+  <Card title="Top bar button" icon="magnifying-glass">
+    Click the **⌘K** button in the application top bar. Useful if you prefer mouse navigation or are on a device where the keyboard shortcut conflicts with a system binding.
+  </Card>
+</CardGroup>
+
+The palette opens centered on screen with a text input focused and ready to type.
+
+## What You Can Do
+
+The command palette is a single entry point for navigation and actions. Everything below is accessible by typing — no need to remember where settings live or hunt through menus.
+
+<Accordion title="Jump to a channel or DM">
+  Type any part of a channel name (e.g., `gen` finds `#general`) or a peer's display name to jump directly to that conversation. Press **Enter** to navigate instantly.
+</Accordion>
+
+<Accordion title="Find a person and open their profile">
+  Type a display name or DID fragment. Matching peers appear in the **People** section. Press **Enter** to open their profile card, where you can start a DM, view their DID, or copy their public key.
+</Accordion>
+
+<Accordion title="Search message history">
+  Type a word or phrase. The palette performs a full-text search against your locally stored message archive — including messages from channels you have the RoomKey for. Results show the matching message excerpt, the channel name, and the author. Pressing **Enter** on a result jumps to that message in context.
+</Accordion>
+
+<Accordion title="Trigger app actions">
+  Certain actions are available as palette commands without needing to navigate to a settings page:
+
+  | Type this | Action |
+  |-----------|--------|
+  | `create channel` | Opens the new-channel dialog |
+  | `theme`, `dark`, or `light` | Switches the app between dark and light mode |
+  | `profile` | Opens your profile modal |
+  | `devices` | Opens Settings → Devices |
+</Accordion>
+
+## Search Scoring
+
+The palette uses a multi-pass fuzzy matching algorithm so you get relevant results even with typos or partial input:
+
+1. **Exact substring match** — results that contain your query verbatim rank highest.
+2. **Keyword match** — results where every word in your query appears somewhere in the target, in any order.
+3. **Subsequence match** — results where the characters of your query appear in order but not necessarily consecutively (e.g., `gcl` matches `#general`).
+
+Results within each tier are sorted by recency and relevance. The ranking updates live as you type, so you rarely need more than three or four characters to reach what you want.
+
+## Keyboard Navigation
+
+The palette is fully keyboard-driven:
+
+| Key | Action |
+|-----|--------|
+| **↑ / ↓** | Move selection up or down through results |
+| **Enter** | Activate the selected result or action |
+| **Escape** | Close the palette and return focus to where you were |
+| **Tab** | Cycle through result sections (Channels, People, Messages, Actions) |
+
+You never need to reach for the mouse.
+
+<Tip>
+To switch the app theme without opening Settings, just open the palette and type `theme`, `dark`, or `light`. The theme toggles immediately as you select the matching action — handy when switching environments or sharing your screen.
+</Tip>

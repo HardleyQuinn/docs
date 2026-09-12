@@ -1,0 +1,155 @@
+---
+title: "Relay HTTP Endpoints: POST /events and GET /events"
+sidebarTitle: "Endpoints"
+description: "Full reference for the relay's POST /events (submit envelope) and GET /events (bulk sync) endpoints, including parameters, responses, and error codes."
+---
+
+The relay exposes two data endpoints — one for submitting an envelope and one for reading the event stream in bulk. Both work with raw JSON bodies; there are no multipart forms, no GraphQL, and no WebSocket upgrades. The read path has no filtering by kind, stream, or author — clients receive everything and apply their own decryption and relevance logic locally.
+
+---
+
+## POST /events
+
+Submit a signed `SignedEnvelope` to the relay. The relay runs four mechanical checks in order: envelope size, JSON parseability, proof-of-work, and per-DID rate limit. If all checks pass, the envelope is appended to the store and the relay returns the assigned arrival offset.
+
+### Request body
+
+A single `SignedEnvelope` JSON object. All fields are required.
+
+<ParamField body="EventId" type="string (UUID)" required>
+  A UUID v4 assigned by the author client. Acts as a deduplication key in the vault (`INSERT OR IGNORE`). Not an ordering signal on the relay.
+</ParamField>
+
+<ParamField body="Kind" type="integer (0–4)" required>
+  Envelope kind. `0` = Identity (plaintext), `1` = Encrypted (RoomKey), `2` = KeySeal, `3` = Mls, `4` = Sealed (sealed-sender DM).
+</ParamField>
+
+<ParamField body="AuthorDid" type="string" required>
+  The author's DID string (`did:evil:<base64url(pubkey)>`). For sealed-sender envelopes (`Kind: 4`), this is an ephemeral per-message key that identifies no one.
+</ParamField>
+
+<ParamField body="Timestamp" type="integer" required>
+  Author-asserted Unix timestamp in seconds. The relay stores it as provided; it is used for display and vault range queries only.
+</ParamField>
+
+<ParamField body="StreamId" type="string (UUID)" required>
+  Opaque routing key identifying the logical stream (channel, inbox, directory, etc.).
+</ParamField>
+
+<ParamField body="PrevEventHash" type="string (base64)" required>
+  SHA-256 of the prior envelope in this stream, base64-encoded. Zero-filled (`AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`) in v1.
+</ParamField>
+
+<ParamField body="PowNonce" type="integer (int64)" required>
+  Proof-of-work nonce. Set to `0` when `powBits` is `0` (PoW disabled). When PoW is required, this field is incremented until `SHA256(preimage ‖ signature ‖ nonce)` has at least `powBits` leading zero bits.
+</ParamField>
+
+<ParamField body="Payload" type="string (base64)" required>
+  Event body, base64-encoded. Plaintext domain-event JSON for `Kind: 0`; ciphertext for all other kinds.
+</ParamField>
+
+<ParamField body="Signature" type="string (base64)" required>
+  Ed25519 signature over the canonical preimage (all header fields except `PowNonce`), base64-encoded.
+</ParamField>
+
+### Example request
+
+```json
+{
+  "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+  "Kind": 0,
+  "AuthorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
+  "Timestamp": 1718000000,
+  "StreamId": "018fde1a-0000-7000-8000-000000000001",
+  "PrevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "PowNonce": 0,
+  "Payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
+  "Signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
+}
+```
+
+### Response — 202 Accepted
+
+```json
+{ "offset": 42 }
+```
+
+The `offset` is the relay's monotonic arrival counter assigned to this envelope. Store it as your sync cursor.
+
+### Error responses
+
+| Status | Body | Cause |
+|--------|------|-------|
+| `413 Payload Too Large` | _(empty)_ | Envelope body exceeds `maxEnvelopeBytes` (default 65 536 bytes) |
+| `422 Unprocessable Entity` | `{"error":"malformed"}` | Envelope JSON cannot be parsed or is missing required fields |
+| `422 Unprocessable Entity` | `{"error":"pow","required":N}` | `PowNonce` does not satisfy the relay's current PoW difficulty (`N` bits) |
+| `429 Too Many Requests` | _(empty)_ | The author DID has exhausted its token-bucket allowance; back off before retrying |
+
+---
+
+## GET /events
+
+Fetch envelopes in arrival order, starting after a given offset. This is the only read path — there is no get-by-id, no filter by stream or author, and no subscription mechanism. Clients poll this endpoint and apply their own local filtering.
+
+### Query parameters
+
+<ParamField query="since" type="long" default="0">
+  Return only envelopes whose relay-assigned offset is **greater than** this value. Pass the `offset` of the last envelope you received to resume sync. Defaults to `0` (return everything from the beginning).
+</ParamField>
+
+<ParamField query="limit" type="integer" default="500">
+  Maximum number of envelopes to return in this response. Clamped to the range `[1, 2000]`. If the relay has more events beyond your `since` cursor than `limit` allows, page by advancing `since` to `latestOffset` in the response.
+</ParamField>
+
+### Response — 200 OK
+
+<ResponseField name="latestOffset" type="long">
+  The current head of the relay's event stream — the offset of the most recently appended envelope. Use this to detect whether more pages are available and as your next poll cursor.
+</ResponseField>
+
+<ResponseField name="events" type="array">
+  Ordered array of envelope wrappers. Each element contains:
+
+  <Expandable title="Event wrapper fields">
+    <ResponseField name="offset" type="long">
+      The relay-assigned monotonic arrival offset for this envelope. This is the ordering signal — not `Timestamp` or `EventId`.
+    </ResponseField>
+    <ResponseField name="envelope" type="object">
+      The full `SignedEnvelope` JSON object as submitted. All fields are present exactly as the author sent them.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example request
+
+```bash
+curl 'http://localhost:5100/events?since=0&limit=10' | jq
+```
+
+### Example response
+
+```json
+{
+  "latestOffset": 57,
+  "events": [
+    {
+      "offset": 1,
+      "envelope": {
+        "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+        "Kind": 0,
+        "AuthorDid": "did:evil:AAABBBCCC_example_pubkey_base64url",
+        "Timestamp": 1718000000,
+        "StreamId": "018fde1a-0000-7000-8000-000000000001",
+        "PrevEventHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "PowNonce": 0,
+        "Payload": "eyJUeXBlIjoiSWRlbnRpdHlVcGRhdGVkIiwiRGlzcGxheU5hbWUiOiJBbGljZSJ9",
+        "Signature": "c2lnbmF0dXJlYnl0ZXNnb2hlcmViYXNlNjRlbmNvZGVkZm9yZXhhbXBsZXB1cnBvc2Vz"
+      }
+    }
+  ]
+}
+```
+
+<Tip>
+  **Polling pattern:** EvilChat clients poll `GET /events` on a roughly 1.5-second interval. Store your last-seen `offset` locally (in browser storage or on device) and pass it as `since` on every poll. When the response's `latestOffset` equals your cursor, you are up to date and can wait for the next interval before polling again. If `latestOffset` exceeds your cursor by more than `limit` envelopes, issue follow-up requests with an advancing `since` until your cursor reaches `latestOffset`.
+</Tip>

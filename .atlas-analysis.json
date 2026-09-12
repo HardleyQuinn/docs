@@ -1,0 +1,111 @@
+{
+  "projectType": "saas",
+  "projectName": "EvilChat",
+  "projectDescription": "A decentralized, end-to-end encrypted chat application built on the EVIL protocol — your messages are signed, encrypted, and relay-blind from the moment you type.",
+  "theme": "luma",
+  "primaryColor": "#047cbd",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Using EvilChat",
+            "pages": [
+              "guides/identity-and-profile",
+              "guides/channels",
+              "guides/direct-messages",
+              "guides/messaging",
+              "guides/moderation",
+              "guides/command-palette"
+            ]
+          },
+          {
+            "group": "Self-Hosting",
+            "pages": [
+              "self-hosting/relay",
+              "self-hosting/vault",
+              "self-hosting/configuration"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/encryption-model",
+              "security/identity-model",
+              "security/relay-privacy"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Relay API",
+            "pages": [
+              "api/relay-overview",
+              "api/relay-endpoints",
+              "api/relay-info"
+            ]
+          },
+          {
+            "group": "Vault CLI",
+            "pages": [
+              "api/vault-overview",
+              "api/vault-cli",
+              "api/vault-api"
+            ]
+          },
+          {
+            "group": "Protocol",
+            "pages": [
+              "api/protocol-events",
+              "api/protocol-envelopes"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "End-to-end encrypted channels and direct messages — relays never see plaintext",
+    "Self-sovereign identity via Ed25519 keypairs (DID-based, no accounts or passwords)",
+    "Decentralized relay architecture — anyone can run their own relay",
+    "Sealed-sender direct messages — relay cannot see who sent a DM",
+    "MLS (Messaging Layer Security) group encryption for channels",
+    "Append-only event log with client-side projection — tamper-evident message history",
+    "evilvault daemon — self-hosted, Storage-Key-encrypted permanent archive",
+    "Web and mobile (iOS, Android, macOS) clients via Blazor and MAUI",
+    "Message reactions, editing, deletion, and moderation (bans, moderator grants)",
+    "Command palette (⌘K) for quick navigation and full-text message search",
+    "Proof-of-work spam protection on relay ingress",
+    "Jinx design system with dark/light theme support"
+  ],
+  "publicApiSurface": [
+    "GET /info — relay parameters (PoW difficulty, rate caps, retention TTL)",
+    "POST /events — submit a signed envelope to the relay",
+    "GET /events?since=<offset>&limit=<n> — bulk chronological sync",
+    "POST /archive — vault: batch upsert of re-encrypted VaultRecords",
+    "GET /archive?streamId&fromTs&toTs&limit — vault: range query by stream and timestamp",
+    "GET /status — vault: count, DB size, uptime",
+    "evilvault init — initialize vault config and print pairing token",
+    "evilvault run — start vault daemon",
+    "evilvault config get|set — read/update port and data directory",
+    "evilvault token rotate — generate new bearer token",
+    "evilvault status — query running daemon status",
+    "SignedEnvelope wire format (JSON): EventId, Kind, AuthorDid, Timestamp, StreamId, PrevEventHash, PowNonce, Payload, Signature",
+    "EnvelopeKind enum: Identity, Encrypted, KeySeal, Mls, Sealed",
+    "Domain events: IdentityAnnounced, ChannelCreated, MessageSent, MessageDeleted, MessageEdited, MessageReacted, MemberBanned, ModeratorGranted, RoomKeyDistributed, DeviceAuthorized, DeviceRevoked"
+  ]
+}

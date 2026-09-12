@@ -1,0 +1,93 @@
+---
+title: "EvilChat Relay API Overview"
+sidebarTitle: "Overview"
+description: "The EvilChat relay exposes three HTTP endpoints: GET /info, POST /events, and GET /events. Learn the wire format and how clients interact with it."
+---
+
+The EVIL relay is a stateless, append-only log over HTTP. It stores signed envelopes as opaque bytes, assigns monotonic arrival offsets, and serves bulk chronological sync — nothing more. The relay never decrypts payloads, never filters by recipient, and never verifies Ed25519 signatures; those responsibilities belong to clients. Its only role is mechanical admission control (size, proof-of-work, and per-DID rate limiting) followed by durable append. This design means any relay can serve any client without learning anything about conversation content or social graph.
+
+## Base URL
+
+The default base URL when running the local demo is:
+
+```
+http://localhost:5100
+```
+
+Replace this with your relay's publicly accessible address when operating a production or self-hosted relay. The relay listens on the port configured by `EvilChat:Relay:DbPath` and related settings in `appsettings.json`, or via environment variable overrides in your hosting environment.
+
+## Authentication
+
+The relay requires **no authentication** for either reads or writes. Anyone who can reach the relay's HTTP port can submit envelopes and read the event stream. Spam and abuse protection is instead provided by two complementary mechanisms:
+
+- **Proof-of-Work (PoW):** Before the relay accepts an envelope, the `PowNonce` field must be mined such that the envelope's PoW hash has at least `powBits` leading zero bits. A `powBits` of `0` disables PoW entirely (the default in the local demo).
+- **Per-DID rate limiting:** Each author DID is subject to a token-bucket rate limit. The bucket's capacity and refill rate are published by the relay in the `/info` response.
+
+See the [GET /info reference](/api/relay-info) for the exact parameters your client needs to read before submitting an envelope.
+
+## Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/info` | Relay parameters — PoW difficulty, max envelope size, rate caps, retention TTL |
+| `POST` | `/events` | Submit a signed envelope for relay storage |
+| `GET` | `/events` | Bulk chronological sync starting from a given offset |
+
+## Error Codes
+
+The relay returns a small, predictable set of HTTP error codes on the write path:
+
+| Status | Meaning |
+|--------|---------|
+| `413 Payload Too Large` | The submitted envelope body exceeds `maxEnvelopeBytes` |
+| `422 Unprocessable Entity` | Envelope is malformed (unparseable JSON) or PoW is insufficient — see the JSON body for `{"error":"malformed"}` or `{"error":"pow","required":N}` |
+| `429 Too Many Requests` | The author DID has exceeded the relay's rate limit; back off and retry |
+
+## Wire Format
+
+Every envelope on the relay is a `SignedEnvelope` JSON object. All fields are required on submission. Byte arrays are base64-encoded strings in JSON.
+
+<ParamField body="EventId" type="string (UUID)" required>
+  A UUID v4 assigned by the author client. Used as a deduplication key in the vault — not an ordering signal on the relay.
+</ParamField>
+
+<ParamField body="Kind" type="integer (0–4)" required>
+  Envelope kind. Controls how the client interprets the payload:
+  - `0` — `Identity`: signed plaintext domain event on the public directory stream
+  - `1` — `Encrypted`: RoomKey (AES-256-GCM Sender Key) encrypted channel message
+  - `2` — `KeySeal`: RoomKey material sealed 1-on-1 to a single recipient's inbox stream
+  - `3` — `Mls`: MLS traffic (TLS-serialised MLS message — application or handshake)
+  - `4` — `Sealed`: Sealed-sender DM; the outer `AuthorDid` is an ephemeral key that authenticates no one — the real author is inside the ciphertext
+</ParamField>
+
+<ParamField body="AuthorDid" type="string" required>
+  The author's DID (`did:evil:<base64url(pubkey)>`). For `Kind: 4` (Sealed), this is an ephemeral per-message key.
+</ParamField>
+
+<ParamField body="Timestamp" type="integer (unix seconds)" required>
+  Author-asserted Unix timestamp. Used for display and vault range queries only — never used for ordering on the relay.
+</ParamField>
+
+<ParamField body="StreamId" type="string (UUID)" required>
+  Opaque routing key. May be a channel ID, a recipient's inbox stream, a directory stream, or any other logical grouping. The relay stores and returns it as-is without interpretation.
+</ParamField>
+
+<ParamField body="PrevEventHash" type="string (base64)" required>
+  SHA-256 hash of the previous event in the stream, for optional hash chaining. Zero-filled in v1 (hash chaining deferred).
+</ParamField>
+
+<ParamField body="PowNonce" type="integer (int64)" required>
+  The mined proof-of-work nonce. `0` when PoW is disabled (`powBits = 0`). Mining iterates this field after signing, so changing it never invalidates the signature.
+</ParamField>
+
+<ParamField body="Payload" type="string (base64)" required>
+  The event body. For `Kind: 0` (Identity) this is plaintext domain-event JSON. For all other kinds this is ciphertext. The relay stores and forwards it without inspection.
+</ParamField>
+
+<ParamField body="Signature" type="string (base64)" required>
+  Ed25519 signature over `CanonicalCodec.SignaturePreimage(envelope)`. The relay stores it as opaque bytes; clients verify it after decryption.
+</ParamField>
+
+<Note>
+  **Ordering is by relay-assigned offset, not by `Timestamp` or `EventId`.** When the relay appends an envelope it assigns a monotonic `offset` integer. Clients use `since=<offset>` on `GET /events` to resume sync from where they left off. Never use `Timestamp` or `EventId` as an ordering signal — they are author-asserted and can be set to any value.
+</Note>

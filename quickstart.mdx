@@ -1,47 +1,130 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with EvilChat in Minutes"
+sidebarTitle: "Quickstart"
+description: "Run EvilChat locally with the two-user demo: spin up the relay and two clients with a single command, then exchange encrypted messages."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+The fastest way to experience EvilChat is the built-in two-user demo. A single `dotnet run` command uses .NET Aspire to start a relay and two fully independent client instances — Alice and Bob — each with their own auto-generated identity. Within a minute you'll have two browser windows open, a `#general` channel created, and live end-to-end encrypted messages flowing between them. No accounts, no API keys, no configuration needed.
 
 ## Prerequisites
 
-Before you begin, you must have:
+You need the **.NET 10 SDK** (or later) installed on your machine. Verify with:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+```bash
+dotnet --version
+# should print 10.x.x or higher
+```
 
-## Get started
+<Note>
+  The MAUI mobile head (`EvilChat.Maui`) is excluded from the default build and is not required for this demo. The Aspire orchestrator and Blazor web clients are all you need.
+</Note>
+
+## Run the Demo
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Clone the EvilChat repository and navigate into it:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/HardleyQuinn/EvilChat.git
+    cd EvilChat
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Start the Aspire orchestrator">
+    Run the AppHost project. Aspire starts all three resources and opens its dashboard automatically:
 
     ```bash
-    your-cli init
+    dotnet run --project EvilChat.AppHost
     ```
+
+    The Aspire dashboard opens in your browser. Three resources come up:
+
+    | Resource | URL | Role |
+    |---|---|---|
+    | `relay` | http://localhost:5100 | Dumb pipe — accepts and serves signed envelopes. Mechanical gate: PoW, per-DID rate limit, 64 KiB size cap. |
+    | `client-alice` | http://localhost:5101 | Edge client for user **Alice** (owns `#general`). |
+    | `client-bob` | http://localhost:5102 | Edge client for user **Bob**. |
+
+    Wait for all three resources to show a healthy status before proceeding.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Open both clients side by side">
+    Open **http://localhost:5101** and **http://localhost:5102** in two browser windows or tabs, arranged side by side.
+
+    On first run, each client automatically generates a fresh Ed25519 identity keypair and announces it to the relay's directory stream as a signed `Identity` envelope. No sign-up flow, no form to fill — your DID appears in the top-left corner of each client.
+  </Step>
+
+  <Step title="Create a channel and send a message">
+    In **Alice's** window (http://localhost:5101):
+
+    1. Press **⌘K** (or **Ctrl+K**) to open the command palette.
+    2. Type `#general` and select **Create channel**.
+    3. EvilChat generates an AES-256-GCM RoomKey, encrypts a message with it, and automatically seals the RoomKey to Bob via a `KeySeal` envelope addressed to Bob's inbox stream.
+    4. Type a message and press **Enter**.
+
+    Watch Bob's window — the message arrives within approximately **1.5 seconds** (one poll cycle). Bob's client fetches the new envelope from the relay, decrypts the RoomKey from its inbox stream, and decrypts the message payload. Reply as Bob to complete the exchange.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Prove the Relay Is Blind
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+The relay stores only opaque signed envelopes. Query it directly with `curl` to see exactly what it holds:
+
+```bash
+curl -s 'http://localhost:5100/events?since=0' | jq
+```
+
+Inspect the response — only `Identity`-kind envelopes (`"Kind": 0`) have a human-readable `Payload`. Every other envelope (`Encrypted`, `KeySeal`, `Mls`, `Sealed`) is raw ciphertext. The relay has no idea what any of it says.
+
+```json
+{
+  "latestOffset": 12,
+  "events": [
+    {
+      "offset": 1,
+      "envelope": {
+        "EventId": "...",
+        "Kind": 0,
+        "AuthorDid": "did:evil:...",
+        "Payload": "eyIkdHlwZSI6Iklk..."
+      }
+    },
+    {
+      "offset": 4,
+      "envelope": {
+        "EventId": "...",
+        "Kind": 1,
+        "AuthorDid": "did:evil:...",
+        "Payload": "a3F1dGVza..."
+      }
+    }
+  ]
+}
+```
+
+<Tip>
+  The `since` parameter is a relay **offset**, not a timestamp. Clients advance their cursor by the highest offset they've seen, guaranteeing they never miss or double-process an event regardless of clock skew.
 </Tip>
+
+## Reset to a Fresh World
+
+All identities, channels, and message history are stored under the `.data/` directory in the repository root (gitignored). To wipe everything and start over:
+
+```bash
+rm -rf .data/
+dotnet run --project EvilChat.AppHost
+```
+
+Both clients will generate new identities on their next startup.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="How It Works" icon="circle-nodes" href="/how-it-works">
+    Understand the full message lifecycle: events, encryption, proof-of-work, and client-side projections.
+  </Card>
+  <Card title="Self-Hosting" icon="server" href="/self-hosting/relay">
+    Deploy your own relay and evilvault archive daemon on a server you control.
+  </Card>
+</CardGroup>

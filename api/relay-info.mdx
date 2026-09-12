@@ -1,0 +1,84 @@
+---
+title: "GET /info — Relay Parameters and Capabilities"
+sidebarTitle: "GET /info"
+description: "GET /info returns the relay's published parameters: PoW difficulty bits, max envelope size, rate limits, and retention TTL. Clients fetch this before submitting."
+---
+
+Before submitting any envelope, your client should fetch `/info` to learn what the relay requires. The response tells you the proof-of-work difficulty, the maximum envelope size, and the per-DID rate-limit parameters — everything needed to produce an admissible envelope. Because relay operators can change these values at any time, your client should re-fetch `/info` on reconnect rather than caching the response indefinitely.
+
+## Endpoint
+
+```
+GET /info
+```
+
+No query parameters. No authentication required.
+
+## Response fields
+
+<ResponseField name="powBits" type="integer">
+  The number of required leading zero bits in the proof-of-work hash. A value of `0` means PoW is disabled and the `PowNonce` field in your envelope can be left as `0`. When non-zero, you must mine the `PowNonce` until `SHA256(signaturePreimage ‖ signature ‖ nonce)` has at least this many leading zero bits.
+</ResponseField>
+
+<ResponseField name="powBitsSealed" type="integer">
+  Reserved for a future sealed-sender PoW tier. In v1 this always equals `powBits`. Your client can read it but does not need to treat it differently from `powBits` today.
+</ResponseField>
+
+<ResponseField name="maxEnvelopeBytes" type="integer">
+  Maximum size of the full `SignedEnvelope` JSON body in bytes. Envelopes larger than this are rejected with `413 Payload Too Large`. The default is `65536` (64 KiB).
+</ResponseField>
+
+<ResponseField name="rateCapacity" type="integer">
+  The per-DID token-bucket capacity. A fresh DID starts with this many tokens. Submitting one envelope consumes one token. The default is `30`.
+</ResponseField>
+
+<ResponseField name="rateRefillPerMinute" type="integer">
+  The rate at which spent tokens are refilled, in tokens per minute. Combined with `rateCapacity`, this determines the sustained throughput ceiling for a single DID. The default is `30` (one token every two seconds on average).
+</ResponseField>
+
+<ResponseField name="retentionSeconds" type="long">
+  How long the relay retains envelopes, in seconds. A value of `0` means the relay keeps envelopes indefinitely. When non-zero, envelopes older than this TTL are purged by the relay's background retention service.
+</ResponseField>
+
+## Sample response
+
+```json
+{
+  "powBits": 0,
+  "powBitsSealed": 0,
+  "maxEnvelopeBytes": 65536,
+  "rateCapacity": 30,
+  "rateRefillPerMinute": 30,
+  "retentionSeconds": 0
+}
+```
+
+## Example request
+
+```bash
+curl http://localhost:5100/info | jq
+```
+
+---
+
+## Proof-of-Work
+
+When `powBits` is greater than zero, every envelope must carry a mined `PowNonce`. The PoW algorithm is:
+
+```
+hash = SHA256(signaturePreimage ‖ signature ‖ nonce_as_int64_little_endian)
+```
+
+The hash must have at least `powBits` leading zero bits. Your client iterates the `PowNonce` field starting from `0` until the target is met.
+
+Key properties of this design:
+
+- **Mining happens after signing.** `PowNonce` is excluded from the Ed25519 signature preimage and from the AEAD associated data, so changing the nonce never invalidates the signature.
+- **Work is transferable.** Re-mining someone else's envelope (for example, to boost it past a higher-difficulty relay) only donates hash work to them — their signature and payload remain unchanged and valid.
+- **The relay checks mechanically.** The relay computes the hash from the envelope bytes it already holds and counts leading zero bits. No domain knowledge is required.
+
+When `powBits` is `0`, skip mining entirely and set `PowNonce` to `0`.
+
+<Note>
+  Relay operators can raise or lower `powBits` at any time — for example, in response to a spam event. Your client should re-fetch `/info` on every reconnect (not just on first launch) so it always mines to the current difficulty. If you submit an envelope with insufficient PoW after a difficulty increase, the relay returns `422` with `{"error":"pow","required":N}` where `N` is the new required bit count.
+</Note>

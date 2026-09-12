@@ -1,0 +1,99 @@
+---
+title: "What Your Relay Can and Cannot See"
+sidebarTitle: "Relay Privacy"
+description: "EvilChat relays are blind by design: they store opaque ciphertext and enforce only mechanical checks. Learn exactly what metadata a relay operator can observe."
+---
+
+One of EvilChat's core design properties is that relays are dumb pipes. A relay operator running `GET /events` sees a stream of ciphertext blobs — not your messages, not your contacts, not who sent what to whom. This is not a policy promise; it is a structural property enforced by the protocol. The relay has no decryption keys, performs no signature verification, and applies no domain logic. This page gives you an honest, precise accounting of what a relay operator can and cannot observe, so you can make an informed decision about which relay to use — or whether to run your own.
+
+## What Relays Can See
+
+A relay operator with full access to the event log can observe the following for each envelope:
+
+<Accordion title="Claimed AuthorDid (unreliable for DMs)">
+  Every `SignedEnvelope` carries an `AuthorDid` field. The relay uses this for per-DID rate limiting but does **not** verify the signature — any DID string can be written into this field. For regular channel messages, the `AuthorDid` is the author's real device DID. For sealed-sender DMs (`Kind = Sealed`), the `AuthorDid` is a fresh per-message ephemeral DID that identifies no one.
+</Accordion>
+
+<Accordion title="StreamId (opaque routing key)">
+  Each envelope carries a `StreamId` — a `Guid` used to route it to the right channel or inbox. The relay stores and serves it as an opaque value. It does not contain a channel name or any human-readable information. However, a relay operator who observes which DIDs write to which stream IDs can build a partial social graph over time.
+</Accordion>
+
+<Accordion title="Envelope size and timestamp">
+  The relay records the byte size of each envelope and the server-assigned arrival offset (monotonic integer). The `Timestamp` field is author-asserted and display-only — the relay does not trust or order by it. Size and timing metadata are visible to the operator.
+</Accordion>
+
+<Accordion title="Identity-kind payloads (signed plaintext)">
+  Envelopes of `Kind = Identity` carry signed plaintext by protocol design. This includes `IdentityAnnounced` (display name, seal public key, accent color), `DeviceAuthorized`, `DeviceRevoked`, and `KeyPackagePublished` events. These are intentionally readable — they form the public directory that lets peers verify each other before any session keys exist.
+</Accordion>
+
+## What Relays Cannot See
+
+| Data | Why it's hidden |
+|---|---|
+| **Message content** | All non-`Identity` payloads are ciphertext. The relay has no keys. |
+| **Who sent a DM** | Sealed-sender (`Kind = Sealed`) uses a fresh ephemeral signing key per message. The real sender's identity is inside the ciphertext, visible only to the recipient after decryption. |
+| **Who is reading** | Clients sync by polling `GET /events?since=<offset>` — a bulk scan by arrival offset. The relay cannot tell which streams a client is interested in from this query shape. |
+| **Group membership changes** | MLS commits (member add/remove/update) are `Kind = Mls` — opaque TLS-serialized bytes. The relay cannot parse them. |
+| **Channel names** | Channel IDs are opaque `Guid` values. No cleartext channel name appears on the wire. |
+| **Reaction targets, edit content** | All message operations are inside encrypted payloads. The relay stores the blob; it cannot see what event type it is (aside from `Identity`). |
+
+## Proving Relay Blindness
+
+You can verify this yourself against a running relay:
+
+```bash
+curl -s 'http://localhost:5100/events?since=0' | jq
+```
+
+Examine the output. Each entry looks like:
+
+```json
+{
+  "offset": 3,
+  "envelope": {
+    "eventId": "a1b2c3d4-...",
+    "kind": 1,
+    "authorDid": "did:evil:ABC123...",
+    "timestamp": 1720000000,
+    "streamId": "f47ac10b-...",
+    "prevEventHash": "AAAA...==",
+    "powNonce": 0,
+    "payload": "7nK2pQr8...==",
+    "signature": "xYz9..."
+  }
+}
+```
+
+The `payload` field on non-`Identity` envelopes is base64-encoded ciphertext. Only entries where `"kind": 0` (`Identity`) have a human-readable JSON payload — and those are the directory announcements that are deliberately public. Everything else is an opaque blob.
+
+## Metadata Mitigations
+
+EvilChat takes several steps to reduce the metadata visible even when you accept that some information is structurally observable:
+
+<CardGroup cols={2}>
+  <Card title="Opaque Stream IDs" icon="eye-slash">
+    Channel IDs, inbox stream IDs, and the directory stream ID are all opaque `Guid` values. No cleartext channel name, user handle, or topic appears on the wire. A relay operator sees two DIDs writing to the same stream but not what that stream represents.
+  </Card>
+  <Card title="Sealed Sender for DMs" icon="envelope">
+    Direct messages use a fresh ephemeral signing key per message. The relay cannot build a DM social graph — it cannot tell who is sending DMs to whom, only that some ephemeral key posted something to an inbox stream.
+  </Card>
+  <Card title="Bulk Sync (No Get-by-ID)" icon="database">
+    Clients sync with a single `GET /events?since=<offset>` call. There is no per-stream or per-DID query API. The relay cannot distinguish which streams a client is following from its sync behavior.
+  </Card>
+  <Card title="Rotating Stream Tags (Roadmap)" icon="arrows-rotate">
+    A planned mitigation will let DIDs rotate the stream IDs they write to on a schedule, breaking long-term correlation between a DID and its activity pattern.
+  </Card>
+</CardGroup>
+
+## Rate Limiting and PoW
+
+The relay's two anti-spam mechanisms — token bucket rate limiting and proof-of-work — are designed to work without learning who you are:
+
+- **Rate limiting** is keyed by `AuthorDid`. As noted above, the relay does not verify signatures, so the `AuthorDid` can be any value. For sealed-sender DMs, the ephemeral DID is rate-limited independently of your real DID, and PoW provides the actual spam friction.
+- **Proof-of-work** requires the sender to compute a nonce such that `SHA256(preimage ‖ signature ‖ nonce)` has at least `PowBits` leading zero bits. The work cost is identical whether the signing DID is real or spoofed — it is purely computational friction, not identity-based.
+
+The relay learns nothing about your identity from either mechanism that it does not already learn from the `AuthorDid` field.
+
+<Info>
+  **Trust model:** If you self-host your relay, you are your own relay operator and the metadata above is visible only to you. If you use a shared or third-party relay, the operator can observe the metadata described in this page. The protocol does not require you to trust your relay operator for confidentiality of message content — but you should choose or run a relay whose operator you trust not to perform traffic analysis on the metadata that is visible. Running your own relay is the strongest option.
+</Info>

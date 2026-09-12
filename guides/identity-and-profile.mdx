@@ -1,0 +1,89 @@
+---
+title: "Your EvilChat Identity: DIDs, Keys, and Profile"
+sidebarTitle: "Identity & Profile"
+description: "EvilChat generates a self-sovereign Ed25519 keypair as your identity. Learn how your DID works, how to update your profile, and how device authorization works."
+---
+
+EvilChat creates your identity automatically the very first time it launches — no signup form, no password, no email address required. Instead, the app generates an Ed25519 keypair on your device, and that keypair **is** your identity. Everything you send is signed with your private key; everyone who receives your messages verifies that signature. No central authority can create, revoke, or impersonate your identity.
+
+## Your DID
+
+Your identity is expressed as a **Decentralized Identifier (DID)** in the `did:evil:` method:
+
+```
+did:evil:<base64url(ed25519_pubkey)>
+```
+
+The public key is encoded as URL-safe Base64 and embedded directly in the DID string. This makes your DID **self-certifying**: anyone who knows your DID already knows your public key and can verify your signatures without consulting any external registry or database. There is no lookup table, no DNS, and no EvilChat server that holds a mapping — the math is the registry.
+
+Other users see your DID anywhere the app surfaces raw identity information (member lists, profile cards, the audit log). In everyday use, though, they see your **display name** and **accent color** instead.
+
+<Note>
+Your DID never changes. If you want to rotate to a new keypair you generate a new identity from scratch — there is no in-place key rotation in v1.
+</Note>
+
+## Your Profile
+
+Your profile has two fields you can set: a **display name** and an **accent color**. Both are broadcast on the public identity/directory stream as a signed `IdentityAnnouncedEvent`, so every peer that syncs with the same relay sees your updates within seconds.
+
+**To update your profile:**
+
+<Steps>
+  <Step title="Open the profile modal">
+    Click the **gear icon** (⚙) in the bottom-left corner of the sidebar to open Settings, then select **Profile**.
+  </Step>
+  <Step title="Set your display name">
+    Type the name you want peers to see. It can be any UTF-8 string — there is no uniqueness constraint because your DID is the real unique identifier.
+  </Step>
+  <Step title="Choose an accent color">
+    Pick one of the five available accent colors: **cyan**, **magenta**, **green**, **violet**, or **blue**. This color tints your avatar and message bubbles throughout the UI.
+  </Step>
+  <Step title="Save">
+    Click **Save**. The app signs a new `IdentityAnnouncedEvent` and posts it to the relay. Connected peers receive the update on their next sync cycle.
+  </Step>
+</Steps>
+
+<Tip>
+If a peer has never chosen an accent color, the app derives a stable color from their DID using a deterministic hash — so no one ever appears with a plain grey avatar. Once they set an explicit color, their chosen color wins everywhere immediately.
+</Tip>
+
+## Device Authorization
+
+EvilChat uses a two-level key hierarchy to separate long-term identity from day-to-day signing:
+
+<CardGroup cols={2}>
+  <Card title="Root Key" icon="key">
+    Your permanent Ed25519 keypair. It signs only `DeviceAuthorized` and `DeviceRevoked` events — never ordinary messages. Guard this carefully; it is the ultimate proof of your identity.
+  </Card>
+  <Card title="Device Key" icon="laptop">
+    A per-installation subkey authorized by the root key. Every envelope you send is signed by the device key. Peers resolve device → root through the identity projection before trusting a message.
+  </Card>
+</CardGroup>
+
+When you install EvilChat on a new device, that device generates its own device keypair and posts a `DeviceAuthorized` event signed by the root key. Peers who receive a message from an unknown device key **park** (hold) that message until the corresponding `DeviceAuthorized` event syncs — so out-of-order delivery never causes messages to be silently dropped.
+
+**To revoke a device:**
+
+1. Open **Settings → Devices**.
+2. Find the device you want to remove.
+3. Click **Revoke**.
+
+This posts a `DeviceRevokedEvent` signed by your root key. Clients that receive the revocation stop trusting envelopes from that device subkey.
+
+<Note>
+v1 device revocation is **observation-time**: a revoked device's past messages are not retroactively invalidated — only future envelopes from that key are rejected after peers see the revocation event. Chain-positional revocation (which would retroactively exclude messages after a given event in the chain) is on the roadmap.
+</Note>
+
+## What Your Keys Do
+
+| Key | Algorithm | Used for |
+|-----|-----------|----------|
+| Root Ed25519 signing key | Ed25519 | Signs `DeviceAuthorized` / `DeviceRevoked` events only |
+| Device Ed25519 signing key | Ed25519 | Signs every `SignedEnvelope` you publish to the relay |
+| Seal public key (X25519) | X25519 (derived) | Lets others ECIES-seal a RoomKey or MLS Welcome to your inbox |
+
+When another user invites you to a channel, they encrypt the channel's RoomKey (or an MLS Welcome message) using your **seal public key** and post that sealed blob to your inbox stream on the relay. Only your device can decrypt it. The relay only sees ciphertext.
+
+<Warning>
+**Back up your `.data/` directory.** In the current development build your root key seed is stored in plaintext inside `profile.json` under `.data/`. This is a known interim: hardware-backed storage and mnemonic export are on the roadmap. Until then, if you lose `.data/` you lose your identity permanently — there is no account recovery.
+</Warning>

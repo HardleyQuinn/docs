@@ -1,0 +1,59 @@
+---
+title: "Sending Direct Messages with Sealed-Sender Privacy"
+sidebarTitle: "Direct Messages"
+description: "EvilChat DMs use sealed-sender encryption so the relay cannot see who sent a message, only who received it. Learn how to open and use DMs."
+---
+
+Direct messages in EvilChat go further than ordinary end-to-end encryption. In most E2EE chat apps, even if the relay cannot read your message content, it can still see metadata — specifically, who sent a message to whom. EvilChat eliminates that leak with **sealed-sender encryption**: the relay receives a ciphertext whose outer layer is signed by a disposable ephemeral key that authenticates nobody. Only the recipient can unwrap the inner layer and learn who actually sent it.
+
+## Opening a DM
+
+You can start a DM with any peer whose identity has been announced on the relay's directory stream (i.e., anyone who has launched EvilChat at least once against the same relay).
+
+<Steps>
+  <Step title="Find the person">
+    Use either of these two paths:
+    - Click the **search icon** in the chat header and type the person's display name or DID.
+    - Open the **Members panel** in any channel, find the person, and click the **DM** button next to their name.
+  </Step>
+  <Step title="The DM channel opens">
+    EvilChat derives a deterministic DM channel ID from the two participants' DIDs. Because the ID is deterministic, no negotiation handshake is needed — both sides independently compute the same channel ID and begin writing to the same stream.
+  </Step>
+  <Step title="Send your first message">
+    Type in the compose box and press **Enter**. Your message is encrypted and dispatched as a `Sealed` envelope.
+  </Step>
+</Steps>
+
+## Sealed-Sender Encryption
+
+Here is what happens under the hood when you send a DM, explained without cryptography jargon:
+
+1. **Your message is encrypted** with the DM channel's shared RoomKey (AES-256-GCM), the same way a channel message would be.
+2. **A fresh ephemeral keypair is generated** just for this send — it is used once and immediately discarded.
+3. **The encrypted payload is re-wrapped** in an outer envelope signed by that ephemeral key. From the relay's perspective, the outer `AuthorDid` field belongs to a key it has never seen before and will never see again. The relay cannot link the envelope to you.
+4. **The recipient unwraps the outer layer** and finds your real DID, your real signature, and your message inside the ciphertext — authenticated, but only visible to them.
+
+The relay knows the **destination** (the recipient's inbox stream ID) but not the **source** (your DID). This is the sealed-sender guarantee.
+
+<Info>
+The current sealed-sender DM scheme encrypts over a static RoomKey shared for the lifetime of the DM conversation. A **Double Ratchet** session — which would give every individual message its own independent key and full forward secrecy — is on the roadmap. Until then, compromising the DM RoomKey would expose the full conversation history for that channel.
+</Info>
+
+## The DMs Sidebar Tab
+
+All your DM conversations live in the **DMS** tab in the left sidebar. Click it to see your full list of direct conversations, sorted by most recent activity. Unread counts appear as badges on each entry.
+
+From the DMS tab you can:
+- Click any conversation to jump directly to it.
+- See the last message preview (your client decrypts it locally; the preview never leaves your device).
+
+## DM vs Channel
+
+| | Direct Message | Channel |
+|---|---|---|
+| **Participants** | Two people | Any number of members |
+| **Sender privacy** | Relay cannot see sender (sealed-sender) | Relay cannot see content; sender DID is visible in envelope metadata |
+| **Encryption** | Sealed-sender over RoomKey | RoomKey (AES-256-GCM) or MLS group |
+| **Channel ID** | Deterministic from two DIDs | Randomly generated GUID |
+| **Forward secrecy** | Roadmap (Double Ratchet) | MLS channels only |
+| **Moderation** | N/A | Owner + moderators can ban |

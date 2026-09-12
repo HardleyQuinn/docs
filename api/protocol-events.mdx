@@ -1,0 +1,306 @@
+---
+title: "EVIL Protocol Domain Events Reference"
+sidebarTitle: "Domain Events"
+description: "Complete reference for EVIL protocol domain events: IdentityAnnounced, ChannelCreated, MessageSent, MessageEdited, MessageDeleted, MessageReacted, MemberBanned, ModeratorGranted, and more."
+---
+
+Domain events are the immutable facts that drive all EvilChat state. Every action — sending a message, editing it, banning a member, authorizing a device — produces a new signed event appended to the relay. Clients project these events into local read models; nothing is ever updated in place. Because the relay stores opaque signed envelopes and never executes business logic, all authority checks (who can ban, who is a moderator, whether a device is still valid) happen client-side at projection time, using only the verified chain of events.
+
+<Note>
+Every domain event implements `IDomainEvent`, which carries three shared fields: `EventId` (a UUID uniquely identifying this fact), `AuthorDid` (the DID of the event's claimed author), and `Timestamp` (unix seconds, author-asserted). **Always verify `AuthorDid` against the outer envelope's verified signer before dispatch** — any RoomKey holder can forge payload fields, including `AuthorDid`. The outer `SignedEnvelope.AuthorDid` is the ground truth; the payload field is a convenience copy.
+</Note>
+
+## Event Catalog
+
+Each event below is described with its target stream, its purpose, and the fields that are unique to it. All events also carry the three `IDomainEvent` base fields (`EventId`, `AuthorDid`, `Timestamp`).
+
+<Accordion title="IdentityAnnounced">
+A peer's public identity record. Broadcasting this event is how a DID becomes discoverable and how others learn the X25519 public key they need to seal RoomKeys and MLS Welcomes to you. Re-announcing is how you change your profile — the directory projection upserts by DID, and the latest event (by relay offset) wins.
+
+**Stream:** Directory (`00000000-0000-0000-0000-00000000d1ec`) — signed plaintext, `Kind = Identity`
+
+<ParamField body="DisplayName" type="string" required>
+  Human-readable name shown in channel member lists and DM headers. Not globally unique — two peers can share a name; the DID is the canonical identity.
+</ParamField>
+
+<ParamField body="SealPublicKey" type="string (base64)" required>
+  The author's X25519 public key. Channel owners encrypt RoomKeys and group creators seal MLS Welcomes to this key via ECIES. Rotate it by re-announcing with a new key — pending sealed deliveries to the old key will fail to decrypt.
+</ParamField>
+
+<ParamField body="Accent" type="string | null">
+  An optional display-color hint. Accepted values: `"cyan"`, `"magenta"`, `"green"`, `"violet"`, `"blue"`. When `null`, renderers derive a stable accent color deterministically from the DID, so the peer always has a consistent identity color even without an explicit preference.
+</ParamField>
+</Accordion>
+
+<Accordion title="DeviceAuthorized">
+A root-key delegation granting an everyday signing subkey (a device DID) the right to author envelopes on behalf of the root identity. This is the only event the root key ever signs — all other events may be signed by an authorized device. Verifiers resolve `device → root` through the identity projection; if an envelope arrives from an unknown device, it parks until this event syncs.
+
+**Stream:** Directory — signed plaintext, `Kind = Identity`, authored by the **root** DID
+
+<ParamField body="DeviceDid" type="string" required>
+  The DID of the subkey being granted. Formatted as `did:evil:<base64url(pubkey)>` just like a root DID.
+</ParamField>
+
+<ParamField body="DeviceName" type="string | null">
+  Optional human-readable label for the device (e.g., `"MacBook Pro"`, `"iPhone 15"`). Used only for display in device-management UIs.
+</ParamField>
+
+<ParamField body="ExpiresAt" type="long">
+  Unix-seconds expiry for the delegation. `0` means no expiry — the device remains authorized until a `DeviceRevoked` event for the same `DeviceDid` wins the keyed-maximum comparison.
+</ParamField>
+</Accordion>
+
+<Accordion title="DeviceRevoked">
+A root-key revocation stripping a device subkey of signing authority. Because all facts are appended rather than updated, revocation is itself a new event. The winning state per `(root, device)` is the `DeviceAuthorized` or `DeviceRevoked` event with the highest `(Timestamp, EventId)` — making concurrent authorize/revoke sequences converge identically on every client regardless of arrival order.
+
+**Stream:** Directory — signed plaintext, `Kind = Identity`, authored by the **root** DID
+
+<ParamField body="DeviceDid" type="string" required>
+  The DID of the subkey being revoked. Any envelopes that arrive after the winning `DeviceRevoked` for this key are rejected by the client projection.
+</ParamField>
+</Accordion>
+
+<Accordion title="KeyPackagePublished">
+The author's current MLS KeyPackage, consumed by group creators when adding members to an MLS-encrypted channel. Because the relay is dumb and cannot enforce one-time use, last-resort semantics apply: a joiner always republishes a fresh KeyPackage after each successful join, ensuring the published package stays usable as a safety net.
+
+**Stream:** Directory — signed plaintext, `Kind = Identity`
+
+<ParamField body="KeyPackageTls" type="string (base64)" required>
+  A TLS-serialized MLS `KeyPackage` blob. Consumers pass it directly to their MLS implementation's group-add API. Do not attempt to parse the interior — treat it as opaque bytes at the protocol level.
+</ParamField>
+</Accordion>
+
+<Accordion title="MlsWelcomeEvent">
+The decrypted payload of a `KeySeal` envelope delivering an MLS Welcome message. It hands the recipient their place in an MLS group and carries enough channel metadata to project the channel UI before any group traffic has decrypted. The outer envelope is addressed to the recipient's inbox stream.
+
+**Stream:** Recipient's inbox stream — `Kind = KeySeal` (sealed 1-on-1 via ECIES)
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel UUID this Welcome grants membership in.
+</ParamField>
+
+<ParamField body="ChannelName" type="string" required>
+  Display name for the channel, provided here so the client can render it before any channel-stream events arrive.
+</ParamField>
+
+<ParamField body="Welcome" type="string (base64)" required>
+  A TLS-serialized MLS `Welcome` message. Pass it to your MLS stack's `process_welcome` API to join the group and obtain the group secrets needed to decrypt subsequent `Kind = Mls` envelopes on the channel stream.
+</ParamField>
+
+<ParamField body="IsDirect" type="boolean">
+  `true` if this channel is a 1-on-1 DM. When `true`, `Peers` contains exactly the two participant DIDs and the channel's `StreamId` is the deterministic DM channel UUID.
+</ParamField>
+
+<ParamField body="Peers" type="string[] | null">
+  The DIDs of the other participants in a DM channel. `null` for regular group channels.
+</ParamField>
+</Accordion>
+
+<Accordion title="ChannelCreated">
+The founding event for a channel, written to the channel's own stream by its creator. This is the authoritative record of the channel's name, whether it is a DM, and whether it uses MLS or classic RoomKey encryption.
+
+**Stream:** Channel stream — `Kind = Encrypted` (or `Kind = Mls`)
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The opaque UUID identifying this channel. For DMs this is the deterministic bilateral UUID; for group channels it is minted at creation time.
+</ParamField>
+
+<ParamField body="Name" type="string" required>
+  The channel's display name, e.g. `"#general"` or a peer's display name for DMs.
+</ParamField>
+
+<ParamField body="IsDirect" type="boolean">
+  `true` if this is a 1-on-1 DM channel. Old envelopes that predate this field deserialize as a regular group channel.
+</ParamField>
+
+<ParamField body="Peers" type="string[] | null">
+  The DIDs of both participants in a DM. `null` for group channels.
+</ParamField>
+
+<ParamField body="Mls" type="boolean">
+  `true` if the channel uses MLS group encryption; `false` (or absent) for classic RoomKey (AES-256-GCM) encryption.
+</ParamField>
+</Accordion>
+
+<Accordion title="MessageSent">
+A chat message posted to a channel. By the time this event reaches your projection, `Body` is already decrypted — either from the channel RoomKey (AES-256-GCM) or from MLS group secrets. The relay only ever stores the ciphertext.
+
+**Stream:** Channel stream — `Kind = Encrypted` or `Kind = Mls`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel this message belongs to. Projections use this to route the event to the correct conversation view.
+</ParamField>
+
+<ParamField body="MessageId" type="string (UUID)" required>
+  Stable identifier for this message. Edit, delete, and reaction events reference this UUID as their `TargetMessageId`.
+</ParamField>
+
+<ParamField body="Body" type="string" required>
+  The plaintext message content, post-decryption. May contain Markdown. The relay stores only ciphertext; this field is populated by the client after successful decryption.
+</ParamField>
+</Accordion>
+
+<Accordion title="MessageDeleted">
+A tombstone marking a message as deleted. Deletion is an appended fact, not a mutation — the tombstone persists even when the target `MessageSent` has not yet arrived, so a late `MessageSentEvent` cannot resurrect a deleted message. Authority checks (whether the deleting DID is the message author or a moderator) are evaluated client-side at projection time.
+
+**Stream:** Channel stream — `Kind = Encrypted` or `Kind = Mls`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel containing the target message.
+</ParamField>
+
+<ParamField body="TargetMessageId" type="string (UUID)" required>
+  The `MessageId` of the `MessageSent` event being tombstoned. If no matching `MessageSent` exists yet in the projection, park the tombstone and apply it when the message eventually arrives.
+</ParamField>
+</Accordion>
+
+<Accordion title="MessageEdited">
+An append-only edit record. Projections display the valid edit with the highest `(Timestamp, EventId)` — a deterministic total order that makes concurrent edits converge identically on every client, with no central arbiter required.
+
+**Stream:** Channel stream — `Kind = Encrypted` or `Kind = Mls`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel containing the target message.
+</ParamField>
+
+<ParamField body="TargetMessageId" type="string (UUID)" required>
+  The `MessageId` of the original `MessageSent` event being edited.
+</ParamField>
+
+<ParamField body="NewBody" type="string" required>
+  The replacement plaintext content. Projections replace the displayed body with this value when this edit wins the keyed-maximum comparison.
+</ParamField>
+</Accordion>
+
+<Accordion title="MessageReacted">
+A reaction toggle as an appended fact. `Removed = false` adds the emoji; `Removed = true` retracts it. Per `(message, author, emoji)`, the event with the highest `(Timestamp, EventId)` wins, so add/remove sequences converge in any arrival order.
+
+**Stream:** Channel stream — `Kind = Encrypted` or `Kind = Mls`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel containing the target message.
+</ParamField>
+
+<ParamField body="TargetMessageId" type="string (UUID)" required>
+  The `MessageId` of the message being reacted to.
+</ParamField>
+
+<ParamField body="Emoji" type="string" required>
+  The reaction emoji as a Unicode string (e.g., `"👍"`, `"❤️"`). The key for conflict resolution is the tuple `(TargetMessageId, AuthorDid, Emoji)`.
+</ParamField>
+
+<ParamField body="Removed" type="boolean" required>
+  `false` adds the reaction; `true` retracts it. The winning event per key is the one with the highest `(Timestamp, EventId)`.
+</ParamField>
+</Accordion>
+
+<Accordion title="MemberBanned">
+A ban or unban as an appended fact. The winning state per `(channel, target)` is the `MemberBanned` event (with `Lifted = false` for an active ban, `Lifted = true` for a lifted ban) whose author is the channel owner or an effective moderator **and** that has the highest `(Timestamp, EventId)`. Authority is order-insensitive: even if a moderator-grant event arrives after the ban, the projection re-evaluates and the ban is valid if the granting event's timestamp precedes it.
+
+**Stream:** Channel stream or server-control stream — `Kind = Encrypted`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel scope of the ban. A ban is channel-scoped in v1; server-level bans are a future extension.
+</ParamField>
+
+<ParamField body="BannedDid" type="string" required>
+  The DID of the member being banned or unbanned.
+</ParamField>
+
+<ParamField body="Lifted" type="boolean">
+  `false` (or absent) — the ban is active. `true` — the ban is lifted (the member is unbanned). The latest valid event per `(ChannelId, BannedDid)` wins.
+</ParamField>
+</Accordion>
+
+<Accordion title="ModeratorGranted">
+A moderator grant or revocation. Only events authored by the channel owner count — there are no transitive grants. The winning state per `(channel, grantee)` is the event with the highest `(Timestamp, EventId)` among owner-authored events.
+
+**Stream:** Channel stream — `Kind = Encrypted`
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel in which the moderation privilege is being granted or revoked.
+</ParamField>
+
+<ParamField body="GranteeDid" type="string" required>
+  The DID of the member receiving or losing the moderator role.
+</ParamField>
+
+<ParamField body="Revoked" type="boolean">
+  `false` (or absent) — the grant is active. `true` — the grant is revoked. The latest owner-authored event per `(ChannelId, GranteeDid)` wins.
+</ParamField>
+</Accordion>
+
+<Accordion title="RoomKeyDistributed">
+The decrypted payload of a `KeySeal` envelope delivering a channel RoomKey. The channel owner sends one of these 1-on-1 to each member via their inbox stream, sealing each copy to the recipient's `SealPublicKey`. Once you decrypt this event, you hold the AES-256-GCM key needed to decrypt all `Kind = Encrypted` messages on the channel stream.
+
+**Stream:** Recipient's inbox stream — `Kind = KeySeal` (sealed 1-on-1 via ECIES)
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel whose RoomKey is being distributed.
+</ParamField>
+
+<ParamField body="ChannelName" type="string" required>
+  Display name for the channel, provided here so the client can project the channel before any channel-stream events arrive.
+</ParamField>
+
+<ParamField body="RoomKey" type="string (base64)" required>
+  The raw 256-bit AES-GCM key bytes. Store this in your local key store keyed by `(ChannelId, Epoch)`.
+</ParamField>
+
+<ParamField body="Epoch" type="integer" required>
+  Key epoch number. Fixed at `0` in v1 — key rotation is deferred to MLS channels. Future versions will increment this when the RoomKey is rotated.
+</ParamField>
+
+<ParamField body="IsDirect" type="boolean">
+  `true` if this RoomKey is for a 1-on-1 DM channel.
+</ParamField>
+
+<ParamField body="Peers" type="string[] | null">
+  The DIDs of both participants in a DM channel. `null` for group channels.
+</ParamField>
+</Accordion>
+
+---
+
+## Event Ordering
+
+The relay assigns events a monotonically increasing **relay offset** as it appends them. This offset is the only ordering signal clients can rely on. The `Timestamp` field in every domain event is **author-asserted** and used only for display — it is never used to determine the order in which events happened from the relay's perspective.
+
+When multiple events compete to define the same logical state (concurrent edits, concurrent bans, concurrent moderator grants), EvilChat clients use the **keyed-maximum rule**: among all events that are eligible to win (by author authority), the one with the highest `(Timestamp, EventId)` is selected. Because `EventId` is a UUID, this pair forms a deterministic total order — no two events can tie, and every client that has received the same set of events converges to the same winner without coordination.
+
+| Conflict type | Key | Tiebreaker |
+|---|---|---|
+| Concurrent edits to the same message | `(ChannelId, TargetMessageId)` | Highest `(Timestamp, EventId)` |
+| Concurrent reactions per (message, author, emoji) | `(TargetMessageId, AuthorDid, Emoji)` | Highest `(Timestamp, EventId)` |
+| Concurrent ban/unban for the same member | `(ChannelId, BannedDid)` | Highest `(Timestamp, EventId)` among authority-holding authors |
+| Concurrent moderator grant/revoke | `(ChannelId, GranteeDid)` | Highest `(Timestamp, EventId)` among owner-authored events |
+| Concurrent device authorize/revoke | `(RootDid, DeviceDid)` | Highest `(Timestamp, EventId)` |
+
+<Warning>
+Never sort channel messages by `Timestamp` for ordering purposes — use relay offset. `Timestamp` can be set to any value by a malicious client. It is intentionally display-only.
+</Warning>
+
+---
+
+## Parked Events
+
+Because the relay is a dumb pipe and does not guarantee delivery ordering, some events can arrive before the context needed to process them exists. Clients must park these events and replay them when the prerequisite arrives.
+
+<CardGroup cols={2}>
+  <Card title="Encrypted messages before RoomKey" icon="key">
+    If a `Kind = Encrypted` channel message arrives before the `RoomKeyDistributed` event for that channel lands in your inbox, store the ciphertext. When the RoomKey eventually arrives, replay all parked ciphertexts for that `(ChannelId, Epoch)`.
+  </Card>
+  <Card title="Tombstones before the target" icon="trash">
+    A `MessageDeleted` tombstone may arrive before its `MessageSent` event. Persist the tombstone so that when the `MessageSent` eventually arrives, the projection immediately marks it deleted without resurrection.
+  </Card>
+  <Card title="Device events before envelope" icon="shield">
+    Envelopes signed by a device subkey may arrive before the `DeviceAuthorized` event that grants that device its signing authority. Park the envelope and retry authorization after the delegation event syncs.
+  </Card>
+  <Card title="Reactions before the message" icon="face-smile">
+    A `MessageReacted` event may reference a `TargetMessageId` that has not yet arrived. Park the reaction and apply it when the target `MessageSent` appears in the projection.
+  </Card>
+</CardGroup>
+
+<Tip>
+A practical parking strategy is a simple dictionary keyed on the missing prerequisite (e.g., `RoomKey` by `(ChannelId, Epoch)`, or `MessageId` for tombstones and reactions). When the prerequisite materializes, drain the parked queue for that key before continuing normal event processing.
+</Tip>

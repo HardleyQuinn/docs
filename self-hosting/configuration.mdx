@@ -1,0 +1,142 @@
+---
+title: "EvilChat Configuration Reference"
+sidebarTitle: "Configuration"
+description: "A complete reference for all configuration options in EvilChat: relay server settings, client settings, and evilvault daemon options with their defaults."
+---
+
+EvilChat exposes configuration through ASP.NET Core's standard config system — `appsettings.json` plus environment variables — for the relay, and a `config.json` file plus environment variable overrides for the vault daemon. Both systems follow the same principle: explicit defaults ship with the binary so you only need to specify what you want to change. For containerized or CI deployments, environment variables let you configure everything without touching files on disk.
+
+## Relay Configuration
+
+The relay reads its settings from `appsettings.json` (or `appsettings.Production.json`) under the `EvilChat:Relay` key hierarchy. When using environment variables, replace `:` with `__` (double underscore), for example `EvilChat__Relay__PowBits=16`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `EvilChat:Relay:DbPath` | `string` | `relay.db` next to binary | Path to the SQLite database file. The relay creates it on first launch. Use an absolute path in production. |
+| `EvilChat:Relay:PowBits` | `int` | `0` | Leading zero bits required in the PoW hash. `0` disables proof-of-work. Each additional bit doubles the expected client computation. |
+| `EvilChat:Relay:MaxEnvelopeBytes` | `int` | `65536` | Maximum envelope body size in bytes (64 KiB). The relay returns HTTP 413 for anything larger. |
+| `EvilChat:Relay:RateCapacity` | `int` | `30` | Token bucket capacity per DID. A DID can burst this many envelopes before being throttled. |
+| `EvilChat:Relay:RateRefillPerMinute` | `int` | `30` | Tokens refilled per minute per DID. Combined with `RateCapacity`, this determines the sustained posting rate. |
+| `EvilChat:Relay:RetentionSeconds` | `long` | `0` | Envelope TTL in seconds. `0` means keep forever. Enable this on storage-constrained relays; pair with the [evilvault daemon](/self-hosting/vault) for client-side archiving. |
+
+### Example Relay `appsettings.Production.json`
+
+```json
+{
+  "EvilChat": {
+    "Relay": {
+      "DbPath": "/var/lib/evilchat/relay.db",
+      "PowBits": 14,
+      "MaxEnvelopeBytes": 65536,
+      "RateCapacity": 20,
+      "RateRefillPerMinute": 20,
+      "RetentionSeconds": 2592000
+    }
+  }
+}
+```
+
+### Relay Environment Variable Overrides
+
+```bash
+export EvilChat__Relay__DbPath=/var/lib/evilchat/relay.db
+export EvilChat__Relay__PowBits=14
+export EvilChat__Relay__RetentionSeconds=2592000
+```
+
+## Client Configuration
+
+The EvilChat client (Blazor web and MAUI) reads its settings from `appsettings.json` under the `EvilChat` key hierarchy, subject to the same ASP.NET Core environment variable override rules.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `EvilChat:Profile:UserName` | `string` | System username | Local profile identifier used to name the profile data directory. Change this only if you need to run multiple profiles on the same machine. |
+| `EvilChat:Profile:DataDir` | `string` | Platform data dir + `evilchat/<UserName>` | Where `profile.json` (identity seed) and the local SQLite read-model database are stored. Back this up — it contains your root key seed. |
+| `EvilChat:Relay:BaseUrl` | `string` | `http://localhost:5100` | Base URL of the relay this client connects to. Change this to point at your self-hosted or a third-party relay. |
+| `EvilChat:Vault:BaseUrl` | `string` | _(empty — vault disabled)_ | Base URL of the paired evilvault daemon. Leave empty to disable archiving. |
+| `EvilChat:Vault:Token` | `string` | _(empty)_ | Bearer token the client sends when calling vault endpoints. Must match the token in the vault's `config.json`. |
+
+### Example Client `appsettings.json`
+
+```json
+{
+  "EvilChat": {
+    "Profile": {
+      "UserName": "alice",
+      "DataDir": "/home/alice/.local/share/evilchat/alice"
+    },
+    "Relay": {
+      "BaseUrl": "https://relay.example.com"
+    },
+    "Vault": {
+      "BaseUrl": "http://localhost:5200",
+      "Token": "3a9f2b...c04d"
+    }
+  }
+}
+```
+
+## Vault Daemon Configuration
+
+The vault daemon reads from `~/.config/evilvault/config.json` (macOS/Linux) or `%AppData%\evilvault\config.json` (Windows). Use the `evilvault config` CLI to read and change values without editing the file directly.
+
+### Reading Configuration
+
+```bash
+# Show all settings (token hidden by default)
+evilvault config get
+
+# Show a specific setting
+evilvault config get port
+evilvault config get dir
+evilvault config get token
+```
+
+### Changing Configuration
+
+```bash
+# Change the listening port
+evilvault config set port 6000
+
+# Change the data directory
+evilvault config set dir /mnt/archive/evilvault
+```
+
+<Note>
+  After running `evilvault config set`, restart the daemon to apply the change: `brew services restart evilvault` on macOS, or `systemctl restart evilvault` on Linux.
+</Note>
+
+### Vault Config File Format
+
+```json
+{
+  "Port": 5200,
+  "DataDir": "/home/you/.config/evilvault/data",
+  "Token": "3a9f2b...c04d"
+}
+```
+
+The SQLite database (`vault.db`) is always stored inside `DataDir`. Its path is derived as `DataDir/vault.db` and is not separately configurable.
+
+### Vault Environment Variable Overrides
+
+Environment variables override the config file entirely and do not require `evilvault init` to have been run — useful for orchestrated dev environments and containers.
+
+| Variable | Config Key | Description |
+|---|---|---|
+| `EVILVAULT_PORT` | `Port` | TCP port the daemon listens on. |
+| `EVILVAULT_DATA` | `DataDir` | Directory for `vault.db`. Created automatically if it does not exist. |
+| `EVILVAULT_TOKEN` | `Token` | Bearer token. Set this to any hex string; the client must match it. |
+| `EVILVAULT_HOME` | Config dir | Base directory for `config.json`. Overrides the default platform path. |
+
+### Rotating the Pairing Token
+
+```bash
+evilvault token rotate
+```
+
+This mints a new random token and saves it to `config.json`. The old token continues to work until the daemon is restarted. After rotating, update your EvilChat client under **Settings → Vault** with the new token.
+
+<Tip>
+  In containerized or orchestrated deployments, set `EVILVAULT_PORT`, `EVILVAULT_DATA`, and `EVILVAULT_TOKEN` as environment variables on the vault container and the corresponding `EvilChat:Vault:*` keys on the client container. This lets you configure both sides without running `evilvault init` or managing config files across container images.
+</Tip>

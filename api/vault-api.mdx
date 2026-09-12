@@ -1,0 +1,197 @@
+---
+title: "evilvault HTTP API: Archive and Status Endpoints"
+sidebarTitle: "HTTP API"
+description: "Reference for evilvault's HTTP API: POST /archive (batch upsert), GET /archive (range query), and GET /status. All endpoints require Bearer token auth."
+---
+
+The `evilvault` daemon exposes a minimal HTTP API for the EvilChat client to archive events and hydrate history. All endpoints require a `Bearer <token>` `Authorization` header — requests without a valid token receive `401 Unauthorized` immediately, with no further processing. Obtain your token from `evilvault config get token` and configure it in EvilChat under **Settings → Vault**.
+
+---
+
+## Authentication
+
+Every request must include:
+
+```http
+Authorization: Bearer <token>
+```
+
+Replace `<token>` with the 48-character hex string printed by `evilvault init` or `evilvault token rotate`. Rotate the token at any time with [`evilvault token rotate`](/api/vault-cli#evilvault-token-rotate); the old token becomes invalid after the next daemon restart.
+
+---
+
+## POST /archive
+
+Batch upsert of re-encrypted `VaultRecord` objects. The client sends records it has already decrypted from the relay and re-encrypted under the Storage Key. The vault stores them with `INSERT OR IGNORE` on `eventId`, so submitting duplicates is safe and idempotent.
+
+### Request
+
+```http
+POST /archive HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+The request body is a JSON array of `VaultRecord` objects. Byte-array fields (`Nonce`, `Ciphertext`) are base64-encoded strings.
+
+<ParamField body="EventId" type="string (UUID)" required>
+  The UUID from the original `SignedEnvelope.EventId`. Used as the primary deduplication key — if a record with this ID already exists in the vault, it is silently skipped.
+</ParamField>
+
+<ParamField body="StreamId" type="string (UUID)" required>
+  The stream the event belongs to (channel ID, inbox stream, etc.). Used as the partition key for `GET /archive` queries.
+</ParamField>
+
+<ParamField body="Timestamp" type="long (unix seconds)" required>
+  Author-asserted Unix timestamp copied from the original envelope. Stored as-is; used only for time-range queries and display — not an ordering guarantee.
+</ParamField>
+
+<ParamField body="Nonce" type="string (base64)" required>
+  12-byte random AES-256-GCM nonce, base64-encoded. Generated fresh by the client for each record. Never reuse a nonce for the same Storage Key.
+</ParamField>
+
+<ParamField body="Ciphertext" type="string (base64)" required>
+  AES-256-GCM ciphertext plus the 16-byte authentication tag, base64-encoded. The ciphertext covers the decrypted domain-event JSON; the vault stores it without inspection.
+</ParamField>
+
+### Example request body
+
+```json
+[
+  {
+    "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+    "StreamId": "018fde1a-0000-7000-8000-000000000001",
+    "Timestamp": 1718000000,
+    "Nonce": "dGhpcmlzMTJieXRlcw==",
+    "Ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
+  },
+  {
+    "EventId": "018fde1b-1111-7b3d-9b2f-5f6d7e9a1b02",
+    "StreamId": "018fde1a-0000-7000-8000-000000000001",
+    "Timestamp": 1718000060,
+    "Nonce": "YW5vdGhlcjEybm9uY2U=",
+    "Ciphertext": "rT7mVp2Yw...base64ciphertext+tag=="
+  }
+]
+```
+
+### Response — 200 OK
+
+```json
+{ "accepted": 2 }
+```
+
+<ResponseField name="accepted" type="integer">
+  The number of records actually written to the database. Records that already existed (by `eventId`) are skipped and not counted.
+</ResponseField>
+
+### Example with curl
+
+```bash
+curl -s -X POST http://localhost:5200/archive \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '[{"EventId":"018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90","StreamId":"018fde1a-0000-7000-8000-000000000001","Timestamp":1718000000,"Nonce":"dGhpcmlzMTJieXRlcw==","Ciphertext":"4gzQ1XlW9..."}]'
+```
+
+---
+
+## GET /archive
+
+Range query of archived events for a specific stream, optionally bounded by a time window. Used by the EvilChat client to hydrate history when you open a channel or DM — especially useful for messages that have since been purged from the relay.
+
+### Query parameters
+
+<ParamField query="streamId" type="string (UUID)" required>
+  The stream to query. Returns only records whose `StreamId` matches this value.
+</ParamField>
+
+<ParamField query="fromTs" type="long (unix seconds)">
+  Inclusive lower bound on `Timestamp`. Omit to start from the beginning of the archive.
+</ParamField>
+
+<ParamField query="toTs" type="long (unix seconds)">
+  Inclusive upper bound on `Timestamp`. Omit to include up to the most recent record.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="500">
+  Maximum number of records to return. Clamped to `[1, 2000]` by the daemon.
+</ParamField>
+
+### Response — 200 OK
+
+An ordered JSON array of `VaultRecord` objects matching the query. The array is empty (`[]`) if no records match.
+
+```json
+[
+  {
+    "EventId": "018fde1a-9c2e-7b3d-8a1f-4e5c6d7e8f90",
+    "StreamId": "018fde1a-0000-7000-8000-000000000001",
+    "Timestamp": 1718000000,
+    "Nonce": "dGhpcmlzMTJieXRlcw==",
+    "Ciphertext": "4gzQ1XlW9...base64ciphertext+tag=="
+  }
+]
+```
+
+The client decrypts each record using the Storage Key: `AES-256-GCM-Decrypt(key=StorageKey, nonce=Nonce, ciphertext=Ciphertext)` yields the original domain-event JSON.
+
+### Example with curl
+
+```bash
+curl -s \
+  -H 'Authorization: Bearer <token>' \
+  'http://localhost:5200/archive?streamId=018fde1a-0000-7000-8000-000000000001&limit=100' \
+  | jq '.[].Timestamp'
+```
+
+### Example with time bounds
+
+```bash
+curl -s \
+  -H 'Authorization: Bearer <token>' \
+  'http://localhost:5200/archive?streamId=018fde1a-0000-7000-8000-000000000001&fromTs=1718000000&toTs=1718086400&limit=500'
+```
+
+---
+
+## GET /status
+
+Returns daemon health and storage statistics. Use this to verify the vault is reachable, check how many events have been archived, and monitor database growth.
+
+### Response — 200 OK
+
+<ResponseField name="archivedCount" type="long">
+  Total number of `VaultRecord` rows currently stored in `vault.db`.
+</ResponseField>
+
+<ResponseField name="databaseBytes" type="long">
+  Size of the `vault.db` file in bytes at the time of the request.
+</ResponseField>
+
+<ResponseField name="startedAtUnixSeconds" type="long">
+  Unix timestamp (seconds) at which the current daemon process started. Useful for confirming a recent restart took effect.
+</ResponseField>
+
+### Example with curl
+
+```bash
+curl -s \
+  -H 'Authorization: Bearer <token>' \
+  http://localhost:5200/status \
+  | jq
+```
+
+### Example response
+
+```json
+{
+  "archivedCount": 14382,
+  "databaseBytes": 43724,
+  "startedAtUnixSeconds": 1718006400
+}
+```
+
+<Note>
+  The `evilvault status` CLI command is a convenience wrapper around this endpoint. It formats the output as human-readable text and handles connection errors for you. Use the raw HTTP endpoint when integrating with monitoring systems (e.g., for a Prometheus scraper or a health-check probe).
+</Note>

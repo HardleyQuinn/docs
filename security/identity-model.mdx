@@ -1,0 +1,93 @@
+---
+title: "EvilChat Identity: Ed25519 Keys, DIDs, and Devices"
+sidebarTitle: "Identity Model"
+description: "EvilChat identity is self-sovereign: your root Ed25519 keypair IS your account. Learn how DIDs work, how device subkeys are authorized, and how revocation is enforced."
+---
+
+In EvilChat there is no server that knows who you are. Your identity is your Ed25519 keypair — `did:evil:<base64url(pubkey)>` — and every message you send is cryptographically signed by your device key. No email address, no phone number, no account creation flow. The keypair is generated on your device on first launch and stored in `profile.json`. Lose the keypair, and you lose access to your identity permanently — there is no recovery flow because there is no central authority to appeal to.
+
+## Root vs. Device Keys
+
+EvilChat separates **root keys** from **device keys** to limit the blast radius of a compromised device.
+
+<CardGroup cols={2}>
+  <Card title="Root Key" icon="key">
+    Signs only `DeviceAuthorized` and `DeviceRevoked` events. Never used for ordinary messages. Keeping the root key offline (on a secure device or backup) means a compromised laptop cannot impersonate your root identity.
+  </Card>
+  <Card title="Device Key" icon="laptop">
+    Signs all everyday envelopes — messages, reactions, edits, channel operations. Each device has its own Ed25519 keypair. A compromised device key can be revoked by the root key without changing your DID.
+  </Card>
+</CardGroup>
+
+In v1, clients currently authorize only their own device key at init time. Multi-device pairing (where you authorize a second device from an existing installation) is on the roadmap. Device subkeys are already fully resolved at the protocol level — the architecture is in place.
+
+## DID Format
+
+Your EvilChat DID is:
+
+```
+did:evil:<base64url(ed25519_pubkey)>
+```
+
+This format is **self-certifying**: the DID encodes your public key, and possession of the corresponding private key is the sole proof of ownership. There is no registry to query, no DNS lookup, no PKI hierarchy. Any client that receives your DID can independently verify your signatures — no trusted third party required.
+
+<Info>
+  The `base64url` encoding uses the standard URL-safe alphabet (RFC 4648 §5) without padding. A 32-byte Ed25519 public key encodes to exactly 43 characters.
+</Info>
+
+## Announcing Your Identity
+
+On first launch, the client posts an `IdentityAnnounced` event to the public directory stream. This event is **signed plaintext** (`Kind = Identity`) — the relay and any observer can read it. It carries:
+
+| Field | Description |
+|---|---|
+| `AuthorDid` | Your root DID |
+| `DisplayName` | Your chosen display name |
+| `SealPublicKey` | Your X25519 public key — the key others use to seal RoomKeys and MLS Welcomes to you |
+| `Accent` | Optional display accent color (`cyan`, `magenta`, `green`, `violet`, `blue`). `null` means clients derive a stable color from your DID. |
+
+Re-announcing updates your profile. The directory projection upserts by DID using the latest-wins rule — the `IdentityAnnounced` event with the highest `(Timestamp, EventId)` is the canonical profile for your DID.
+
+## Device Authorization
+
+Before a device key can be trusted to sign envelopes on your behalf, it must be authorized by your root key:
+
+1. The device generates a fresh Ed25519 keypair (the device DID).
+2. The root key signs a `DeviceAuthorized` event naming the device DID, optionally with a human-readable `DeviceName` and an expiry timestamp (`ExpiresAt = 0` means no expiry).
+3. This event is posted to the directory stream as signed plaintext.
+
+When other clients receive an envelope, they check that the signing DID is either the root DID directly, or a device DID with a valid `DeviceAuthorized` event. If an envelope arrives from an **unknown device** (the authorization event has not synced yet), the client **parks** the envelope and replays it once the authorization event arrives. Envelopes are never silently dropped.
+
+## Device Revocation
+
+To revoke a device — for example, after a lost laptop — the root key signs a `DeviceRevoked` event:
+
+```
+DeviceRevokedEvent {
+  AuthorDid: "<root DID>",
+  DeviceDid: "<device DID to revoke>"
+}
+```
+
+Clients resolve effective device status using the **keyed-maximum rule**: for each `(root DID, device DID)` pair, the event with the highest `(Timestamp, EventId)` among all `DeviceAuthorized` and `DeviceRevoked` events determines whether the device is currently authorized. This rule is order-insensitive — clients converge to the same answer regardless of which events arrive first.
+
+<Note>
+  v1 uses **observation-time** revocation: a `DeviceRevoked` event invalidates the device going forward from when the event is observed. Chain-positional revocation — where the revocation retroactively invalidates envelopes signed after a specific chain position — is a flagged protocol upgrade.
+</Note>
+
+## Hash Chaining
+
+Every `SignedEnvelope` carries a `PrevEventHash` field that links it to the author's previous event on the same stream, forming a **per-author hash chain**. This lets clients detect:
+
+- **Gaps**: a missing event between two known chain positions.
+- **Forks**: two events with the same `PrevEventHash` (an author signed two conflicting continuations).
+
+Clients that detect a gap park dependent events and flag the gap in the UI. The chain does not require a global ordering — each author maintains their own chain independently.
+
+<Note>
+  In v1, `PrevEventHash` is zero-filled (hash chaining is implemented in the protocol layer but deferred in the client). The field is reserved in the wire format so enabling it in a future release requires no breaking change.
+</Note>
+
+<Warning>
+  **Your root key seed is currently stored in plaintext in `profile.json`.** Back up this file to offline storage (an encrypted USB drive, a password manager's secure notes, etc.). If you lose this file and have no backup, your identity is unrecoverable — there is no account reset. Mnemonic seed export and offline root key custody are on the roadmap but not yet available.
+</Warning>
