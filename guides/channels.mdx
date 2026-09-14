@@ -8,7 +8,7 @@ Channels are named, persistent, end-to-end encrypted group spaces where any numb
 
 ## Creating a Channel
 
-Only the **server owner** and **moderators** can create channels — channels have no owners of their own, and moderation is server-wide (see the [Moderation guide](/guides/moderation#who-can-moderate)). If you are a regular member, the **+** button does not appear; and because the rule is enforced by every client's projection rather than by any server, a channel created without that authority is simply hidden on everyone else's client.
+Only the **server owner** and **moderators** can create channels — channels have no owners of their own, and moderation is server-wide (see the [Moderation guide](/guides/moderation#who-can-moderate)). If you are a regular member, the **+** button does not appear; and because the rule is enforced by every client's projection rather than by any server, a channel created without that authority is simply hidden on everyone else's client. Membership overrides that filter: any channel your client has actually joined (via a verifiable MLS Welcome) stays visible, even if the creator's authorizing grant rode a control-channel epoch your client cannot decrypt — which happens if you were server-banned and unbanned, or joined the community after the grant.
 
 <Steps>
   <Step title="Click the + button">

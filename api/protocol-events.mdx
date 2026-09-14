@@ -103,7 +103,7 @@ The decrypted payload of a `KeySeal` envelope delivering an MLS Welcome message.
 <Accordion title="ChannelCreated">
 The founding event for a channel, written by its creator. This is the authoritative record of the channel's base name, whether it is a DM, and whether it runs in sealed mode. Members joining later usually cannot decrypt it (it predates their epoch) — they project the channel from their `MlsWelcome` instead.
 
-Creating a channel confers no authority — channels have no owners. Only the server owner and server-wide moderators may create group channels, and the rule is enforced at query time: clients hide non-DM channels whose creator does not hold moderator authority (a late-arriving grant makes the channel appear).
+Creating a channel confers no authority — channels have no owners. Only the server owner and server-wide moderators may create group channels, and the rule is enforced at query time: clients hide non-DM channels whose creator does not hold moderator authority (a late-arriving grant makes the channel appear). Holding the channel's MLS group also makes it visible — grants ride the encrypted control stream, so a member whose join epoch postdates the grant can never decrypt it; the Welcome that admitted them is proof enough.
 
 **Stream:** Channel stream — `Kind = Mls` for standard channels; `Kind = Sealed` (under the creation epoch's tag) for DMs and sealed channels; historical channels used `Kind = Encrypted`
 
