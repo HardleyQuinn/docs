@@ -82,7 +82,7 @@ v1 device revocation is **observation-time**: a revoked device's past messages a
 | Device Ed25519 signing key | Ed25519 | Signs every `SignedEnvelope` you publish to the relay |
 | Seal public key (X25519) | X25519 (derived) | Lets others ECIES-seal an MLS Welcome to your inbox |
 
-When you are added to a channel, the owner's client encrypts an MLS Welcome message using your **seal public key** and posts that sealed blob to your inbox stream on the relay. Only your device can decrypt it. The relay only sees ciphertext.
+When you are added to a channel, the creator's client encrypts an MLS Welcome message using your **seal public key** and posts that sealed blob to your inbox stream on the relay. Only your device can decrypt it. The relay only sees ciphertext.
 
 <Warning>
 **Back up your `.data/` directory.** In the current development build your root key seed is stored in plaintext inside `profile.json` under `.data/`. This is a known interim: hardware-backed storage and mnemonic export are on the roadmap. Until then, if you lose `.data/` you lose your identity permanently — there is no account recovery.

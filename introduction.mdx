@@ -45,7 +45,7 @@ Most chat apps trade privacy for convenience: your messages live in plaintext on
     Reactions, message edits, and deletions are appended facts, not mutations. Edits converge on the highest `(Timestamp, EventId)` pair; a deletion tombstone prevents a late `MessageSent` from resurrecting a deleted message.
   </Card>
   <Card title="Moderation" icon="gavel">
-    Channel owners can ban/unban members and grant moderator status. Authority is resolved client-side at query time — out-of-order grant and ban events still converge correctly.
+    The server owner and server-wide moderators can ban/unban members, per channel or community-wide. Authority is resolved client-side at query time — out-of-order grant and ban events still converge correctly.
   </Card>
   <Card title="Command Palette" icon="magnifying-glass">
     Press **⌘K** (or **Ctrl+K**) anywhere in the app to open the command palette. Create channels, switch conversations, or trigger actions without touching the mouse.

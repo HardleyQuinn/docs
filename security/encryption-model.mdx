@@ -52,7 +52,7 @@ MLS heals when a member commits an update, not automatically per round trip. Evi
 Exactly one member commits per conversation, because two members committing in the same epoch would fork the group:
 
 - In a **DM**, the peer with the lowest root DID commits (the same rule that resolves the initiation race).
-- In a **sealed channel**, the channel owner commits (matching the convention that only owners run membership).
+- In a **sealed channel**, the channel creator commits (matching the convention that the creator's client runs membership).
 
 In sealed conversations the update commit itself rides a sealed envelope, so the relay cannot even see that the ratchet advanced — and each rotation also rotates the stream tag, unlinking the relay's view of the conversation.
 
@@ -70,7 +70,7 @@ Only the holder of the recipient's Ed25519 identity key (which controls the corr
 
 ## Legacy RoomKey ciphertext
 
-Early EvilChat channels encrypted with a static shared **RoomKey** (AES-256-GCM under `Kind = Encrypted` envelopes, with the canonical header as AEAD associated data). That scheme is retired: nothing encrypts with a RoomKey anymore, and channels that used one were migrated to MLS by their owners.
+Early EvilChat channels encrypted with a static shared **RoomKey** (AES-256-GCM under `Kind = Encrypted` envelopes, with the canonical header as AEAD associated data). That scheme is retired: nothing encrypts with a RoomKey anymore, and channels that used one were migrated to MLS by their creators' clients.
 
 Decryption support remains so history stays readable:
 

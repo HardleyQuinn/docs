@@ -8,6 +8,8 @@ Channels are named, persistent, end-to-end encrypted group spaces where any numb
 
 ## Creating a Channel
 
+Only the **server owner** and **moderators** can create channels — channels have no owners of their own, and moderation is server-wide (see the [Moderation guide](/guides/moderation#who-can-moderate)). If you are a regular member, the **+** button does not appear; and because the rule is enforced by every client's projection rather than by any server, a channel created without that authority is simply hidden on everyone else's client.
+
 <Steps>
   <Step title="Click the + button">
     In the left sidebar, click the **+** button next to the Channels heading. The new-channel dialog opens.
@@ -19,7 +21,7 @@ Channels are named, persistent, end-to-end encrypted group spaces where any numb
     Check **sealed** to hide the channel from the relay entirely: every envelope it produces — messages, the creation event, even membership operations — is signed by a disposable key and addressed to a rotating stream tag. The relay cannot tell the channel exists. Leave it unchecked for a standard channel, whose ciphertext rides a stable stream ID. See [Sealed mode](/security/sealed-mode) for the trade-offs.
   </Step>
   <Step title="Confirm">
-    Click **Create**. EvilChat bootstraps a fresh MLS group with you as its first member. The channel appears in your sidebar and you are its owner.
+    Click **Create**. EvilChat bootstraps a fresh MLS group with you as its first member. The channel appears in your sidebar. Creating a channel makes your client responsible for its membership loop (adding announced members), but confers no special authority — moderation stays server-wide.
   </Step>
   <Step title="Members join automatically">
     v1 channels are server-public: your client automatically adds every announced member of the community to the group through their published KeyPackage, delivering each a sealed MLS Welcome. Members who announce later are added as they appear. Invite-only channels are a roadmap item.
@@ -37,17 +39,30 @@ Every channel is an **MLS group** (RFC 9420), run by the `evil-mls` Rust core. M
 New members receive an MLS **Welcome** message sealed to their inbox. The Welcome carries enough state to join the group at the current epoch, plus the channel's name and policy flags so your client can show the channel immediately.
 
 <Note>
-Channels created by early versions of EvilChat used a static shared **RoomKey** instead of MLS. Those channels were migrated automatically by their owners' clients; the old ciphertext still decrypts, but nothing encrypts that way anymore. See the [encryption model](/security/encryption-model#legacy-roomkey-ciphertext).
+Channels created by early versions of EvilChat used a static shared **RoomKey** instead of MLS. Those channels were migrated automatically by their creators' clients; the old ciphertext still decrypts, but nothing encrypts that way anymore. See the [encryption model](/security/encryption-model#legacy-roomkey-ciphertext).
 </Note>
 
 ## Joining a Channel
 
-You cannot browse or request to join channels. In v1, channel owners' clients add every announced community member automatically; when that happens for you, the relay delivers a **KeySeal** envelope to your personal inbox stream containing an `MlsWelcomeEvent` sealed to your X25519 seal key.
+You cannot browse or request to join channels. In v1, each channel creator's client adds every announced community member automatically; when that happens for you, the relay delivers a **KeySeal** envelope to your personal inbox stream containing an `MlsWelcomeEvent` sealed to your X25519 seal key.
 
 Your client decrypts the sealed envelope, joins the MLS group at the current epoch, and publishes a fresh KeyPackage (the one just consumed is spent). From that point, new channel traffic decrypts in real time. Messages from epochs before you joined are not decryptable — that is forward secrecy working as intended.
 
 <Note>
 **"Park, don't drop."** If a channel message arrives at your client before its Welcome does — or, in a sealed channel, arrives under a stream tag you cannot resolve yet — the ciphertext is stored locally and replayed automatically the moment the key material lands. You will never lose a message to a race condition.
+</Note>
+
+## Channel Settings
+
+If you are the server owner or a moderator, hovering a channel in the expanded sidebar reveals a **gear** button on its row (the gear is hidden while the sidebar is collapsed). It opens the channel's settings, where you can:
+
+- **Rename the channel.** This appends a `ChannelRenamedEvent`; every client resolves the displayed name from the latest moderator-authored rename, so out-of-order delivery converges.
+- **Deactivate the channel.** A deactivated channel disappears from regular members' sidebars and the command palette, and the composer is disabled for everyone — it becomes read-only. Moderators still see it, dimmed, so they can reopen settings and **Reactivate** it.
+
+Like every other moderation action, both are appended events with authority resolved client-side: a rename or deactivation from a non-moderator is recorded but ignored by every honest client. DMs have no settings — their title is the person on the other end.
+
+<Note>
+Deactivation hides and freezes a channel; it deletes nothing. The event history stays on the relay until TTL expiry and in members' local stores, and reactivating restores the channel exactly as it was.
 </Note>
 
 ## Channel Members
@@ -56,7 +71,7 @@ Open the **Members panel** by clicking the person-list icon in the top bar of an
 
 - A count of members who hold the channel key.
 - Which members are currently online (green dot) vs. offline.
-- Per-member actions: **DM**, **Grant Moderator**, **Ban** (if you have authority).
+- Per-member actions: **DM**, **Ban** (if you are a moderator), **Make Mod** (if you are the server owner).
 
 ## Naming Conventions
 
@@ -64,7 +79,7 @@ Two channels have special roles and are created automatically when a community i
 
 <CardGroup cols={2}>
   <Card title="#general" icon="hash">
-    The default channel every member joins automatically on first sync. Owned by the first user to initialize the community.
+    The default channel every member joins automatically on first sync. Created by the first user to initialize the community — the server owner.
   </Card>
   <Card title="server-control" icon="shield">
     The community-wide moderation stream. Ban events posted here apply across all channels, not just one. See the [Moderation guide](/guides/moderation) for details.

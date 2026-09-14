@@ -55,5 +55,5 @@ From the DMS tab you can:
 | **Sender privacy** | Always sealed — relay sees neither sender nor conversation | Standard: sender device DID visible on the wire. Sealed channels: same guarantees as DMs |
 | **Encryption** | Two-member MLS group under sealed sender | MLS group (`Kind = Mls`, or sealed if the channel opts in) |
 | **Wire address** | Rotating epoch tag | Stable channel GUID (standard) or rotating epoch tag (sealed) |
-| **Forward secrecy** | MLS epochs + periodic self-update | MLS epochs + membership churn (owners self-update sealed channels) |
-| **Moderation** | N/A | Owner + moderators can ban (MLS Remove — cryptographic ejection) |
+| **Forward secrecy** | MLS epochs + periodic self-update | MLS epochs + membership churn (creators self-update sealed channels) |
+| **Moderation** | N/A | Server owner + moderators can ban (MLS Remove — cryptographic ejection) |

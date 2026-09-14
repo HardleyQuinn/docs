@@ -1,25 +1,25 @@
 ---
-title: "Channel Moderation: Bans, Moderators, and Authority"
+title: "Moderation: Bans, Moderators, and Authority"
 sidebarTitle: "Moderation"
-description: "EvilChat moderation works via appended cryptographic events. Channel owners can ban members and grant moderator status; all authority is resolved client-side."
+description: "EvilChat moderation works via appended cryptographic events. The server owner and server-wide moderators can ban members; all authority is resolved client-side."
 ---
 
 EvilChat moderation is built on the same append-only event model as messaging — bans and moderator grants are cryptographic facts appended to the relay stream, not state the relay stores or controls. The relay knows nothing about them. Every moderation action is a signed event; every authority check is computed locally by the client at the moment you query the member list or load a channel. This means moderation works offline, converges across all clients without coordination, and produces a complete, tamper-evident audit trail.
 
 ## Who Can Moderate
 
-EvilChat has a two-tier moderation hierarchy per channel:
+Moderation is **server-wide**. Channels have no owners — the only authority figures in a community are the server owner and the moderators they appoint:
 
 <CardGroup cols={2}>
-  <Card title="Channel Owner" icon="crown">
-    The DID that created the channel. Owners can ban and unban members, grant moderator status, and revoke moderator status. An owner's authority is absolute within their channel.
+  <Card title="Server Owner" icon="crown">
+    The DID that created the community's `server-control` channel — effectively the relay host. The server owner can ban and unban members (per channel or community-wide), grant and revoke moderator status, create channels, and edit channel settings.
   </Card>
   <Card title="Moderator" icon="shield">
-    A member the owner has explicitly promoted. Moderators can ban and unban members. They **cannot** grant moderator status to other members — there are no transitive grants.
+    A member the server owner has explicitly promoted. Moderators hold authority in **every** channel: they can ban and unban members, delete messages, create channels, and edit channel settings. They **cannot** grant moderator status to other members — there are no transitive grants.
   </Card>
 </CardGroup>
 
-Regular members have no moderation authority.
+Regular members have no moderation authority, and creating a channel confers none.
 
 ## Banning a Member
 
@@ -41,7 +41,7 @@ Banning a member appends a `MemberBannedEvent` to the channel stream. The banned
 
 ## Bans Are Cryptographic, Not Just Social
 
-A ban does two things. First, honest clients suppress the banned member's messages — that is the convergent social agreement described above. Second, and stronger: the channel owner's client issues an **MLS Remove commit**, ratcheting the group to a new epoch whose keys the banned member cannot derive. From that epoch on, the banned member cannot *decrypt* channel traffic at all, even though they can still append ciphertext to the public relay (proof-of-work and rate limits bound the flood; honest clients ignore it).
+A ban does two things. First, honest clients suppress the banned member's messages — that is the convergent social agreement described above. Second, and stronger: the channel creator's client (the one that runs the channel's membership loop) issues an **MLS Remove commit**, ratcheting the group to a new epoch whose keys the banned member cannot derive. From that epoch on, the banned member cannot *decrypt* channel traffic at all, even though they can still append ciphertext to the public relay (proof-of-work and rate limits bound the flood; honest clients ignore it).
 
 In a [sealed channel](/security/sealed-mode), the Remove commit itself rides a sealed envelope — the relay never observes that a membership operation happened, let alone who was ejected. If an unban follows, the member is re-added through their published KeyPackage with a fresh Welcome, exactly like a first join; messages sent while they were banned remain undecryptable to them permanently.
 
@@ -51,19 +51,18 @@ Honest limits, stated plainly: a tombstoned or banned member's *pre-ban* message
 
 ## Granting Moderator Status
 
+Only the server owner can grant or revoke moderator status, and the grant applies across the entire community — there is no per-channel moderator role.
+
 <Steps>
-  <Step title="Open the Members panel">
-    Click the person-list icon in the channel top bar.
-  </Step>
-  <Step title="Select the member">
-    Click the member you want to promote.
+  <Step title="Open a member's card">
+    Click the member anywhere they appear — the Members panel, people search, or a message avatar.
   </Step>
   <Step title="Grant moderator">
-    Click **Grant Moderator**. This appends a `ModeratorGrantedEvent` signed by you (the owner).
+    Click **Make Mod**. This appends a `ModeratorGrantedEvent` to the `server-control` stream, signed by you (the server owner).
   </Step>
 </Steps>
 
-To **revoke** moderator status, follow the same steps — the button shows **Revoke Moderator** for existing moderators. This appends a `ModeratorGrantedEvent` with `Revoked: true`. Only channel-owner–authored grant/revoke events count; moderators cannot promote others.
+To **revoke** moderator status, follow the same steps — the button shows **Revoke Mod** for existing moderators. This appends a `ModeratorGrantedEvent` with `Revoked: true`. Only server-owner–authored grant/revoke events on the `server-control` stream count; moderators cannot promote others, and grant events on ordinary channel streams are ignored by every honest client.
 
 ## How Authority is Resolved
 
@@ -72,7 +71,7 @@ No server validates moderation events. Instead, each client independently evalua
 The resolution algorithm:
 
 1. For each `(channel, target)` pair, collect all `MemberBannedEvent` records.
-2. Filter to only those whose `AuthorDid` was the channel owner **or** an effective moderator **at the time of that event's winning position** (determined by `(Timestamp, EventId)`).
+2. Filter to only those whose `AuthorDid` holds server-wide authority: the server owner (the creator of the `server-control` channel) or a member holding the winning, unrevoked server-owner–authored grant on that stream.
 3. The surviving event with the highest `(Timestamp, EventId)` is the current ban state.
 
 This means:
@@ -87,7 +86,9 @@ The relay has no knowledge of bans whatsoever. Bans are purely client-side proje
 
 For serious situations — spam, abuse, or bad actors who should be removed from the entire community — you can issue a **server ban** instead of a per-channel ban. Server bans are `MemberBannedEvent` records posted to the special **`server-control`** channel stream rather than an individual channel's stream.
 
-Clients that project the `server-control` stream apply those bans across every channel simultaneously. The `server-control` channel is visible only to the community owner and moderators who have been granted access to it.
+Every client projects the `server-control` stream (it is server-public — everyone must receive ban events to apply them) and applies those bans across every channel simultaneously. The channel itself is hidden from navigation; only its events matter.
+
+The `server-control` stream is also where the community's authority is anchored: its creator **is** the server owner, and moderator grants only count when they ride this stream.
 
 <Warning>
 Server bans are as final as channel bans — they can be lifted with a `Lifted: true` event, but until lifted, the banned DID cannot participate in any channel in the community. Use server bans deliberately.

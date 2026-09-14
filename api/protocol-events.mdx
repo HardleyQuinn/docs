@@ -1,7 +1,7 @@
 ---
 title: "EVIL Protocol Domain Events: Complete Field Reference"
 sidebarTitle: "Domain Events"
-description: "The 13 EVIL protocol domain events: field types, stream assignments, and keyed-maximum convergence rules for edits, reactions, bans, and moderator grants."
+description: "The 15 EVIL protocol domain events: field types, stream assignments, and keyed-maximum convergence rules for edits, reactions, bans, renames, and moderator grants."
 ---
 
 Domain events are the immutable facts that drive all EvilChat state. Every action — sending a message, editing it, banning a member, authorizing a device — produces a new signed event appended to the relay. Clients project these events into local read models; nothing is ever updated in place. Because the relay stores opaque signed envelopes and never executes business logic, all authority checks (who can ban, who is a moderator, whether a device is still valid) happen client-side at projection time, using only the verified chain of events.
@@ -101,7 +101,9 @@ The decrypted payload of a `KeySeal` envelope delivering an MLS Welcome message.
 </Accordion>
 
 <Accordion title="ChannelCreated">
-The founding event for a channel, written by its creator. This is the authoritative record of the channel's name, whether it is a DM, and whether it runs in sealed mode. Members joining later usually cannot decrypt it (it predates their epoch) — they project the channel from their `MlsWelcome` instead.
+The founding event for a channel, written by its creator. This is the authoritative record of the channel's base name, whether it is a DM, and whether it runs in sealed mode. Members joining later usually cannot decrypt it (it predates their epoch) — they project the channel from their `MlsWelcome` instead.
+
+Creating a channel confers no authority — channels have no owners. Only the server owner and server-wide moderators may create group channels, and the rule is enforced at query time: clients hide non-DM channels whose creator does not hold moderator authority (a late-arriving grant makes the channel appear).
 
 **Stream:** Channel stream — `Kind = Mls` for standard channels; `Kind = Sealed` (under the creation epoch's tag) for DMs and sealed channels; historical channels used `Kind = Encrypted`
 
@@ -127,6 +129,34 @@ The founding event for a channel, written by its creator. This is the authoritat
 
 <ParamField body="Sealed" type="boolean">
   The sealed-mode policy flag: `true` routes all of the channel's traffic through ephemeral-signed sealed envelopes under rotating epoch tags. Absent or `false` on standard channels.
+</ParamField>
+</Accordion>
+
+<Accordion title="ChannelRenamed">
+A channel rename as an appended fact. Projections record every rename unconditionally and resolve the displayed name at query time: the winning rename per channel is the one with the highest `(Timestamp, EventId)` among events whose author holds server-wide moderator authority. Renames from anyone else are inert on every honest client, and a `ChannelCreated` replay can never regress the name — the base name is only a fallback when no authorized rename exists.
+
+**Stream:** Channel stream — `Kind = Mls` (standard channels) or `Kind = Sealed` (sealed channels)
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel being renamed.
+</ParamField>
+
+<ParamField body="NewName" type="string" required>
+  The replacement display name. Clients show this value when the event wins the keyed-maximum comparison among moderator-authored renames.
+</ParamField>
+</Accordion>
+
+<Accordion title="ChannelDeactivated">
+A deactivation toggle for a channel, keyed-maximum per channel among moderator-authored events. A deactivated channel is hidden from regular members' channel lists and read-only for everyone; moderators still see it and can reactivate it with a later event carrying `Deactivated = false`. Like all moderation state this is a client-side projection — the relay keeps accepting envelopes for the stream, and honest clients simply stop composing into it.
+
+**Stream:** Channel stream — `Kind = Mls` (standard channels) or `Kind = Sealed` (sealed channels)
+
+<ParamField body="ChannelId" type="string (UUID)" required>
+  The channel being deactivated or reactivated.
+</ParamField>
+
+<ParamField body="Deactivated" type="boolean" required>
+  `true` deactivates the channel; `false` reactivates it. The winning event per channel is the one with the highest `(Timestamp, EventId)` among moderator-authored toggles.
 </ParamField>
 </Accordion>
 
@@ -203,12 +233,12 @@ A reaction toggle as an appended fact. `Removed = false` adds the emoji; `Remove
 </Accordion>
 
 <Accordion title="MemberBanned">
-A ban or unban as an appended fact. The winning state per `(channel, target)` is the `MemberBanned` event (with `Lifted = false` for an active ban, `Lifted = true` for a lifted ban) whose author is the channel owner or an effective moderator **and** that has the highest `(Timestamp, EventId)`. Authority is order-insensitive: even if a moderator-grant event arrives after the ban, the projection re-evaluates and the ban is valid if the granting event's timestamp precedes it.
+A ban or unban as an appended fact. The winning state per `(channel, target)` is the `MemberBanned` event (with `Lifted = false` for an active ban, `Lifted = true` for a lifted ban) whose author is the server owner or an effective server-wide moderator **and** that has the highest `(Timestamp, EventId)`. Authority is order-insensitive: even if a moderator-grant event arrives after the ban, the projection re-evaluates and the ban applies retroactively.
 
-**Stream:** Channel stream — `Kind = Encrypted`
+**Stream:** Channel stream — `Kind = Mls` (standard channels) or `Kind = Sealed` (sealed channels)
 
 <ParamField body="ChannelId" type="string (UUID)" required>
-  The channel scope of the ban. Bans are channel-scoped in v1.
+  The channel scope of the ban. On the `server-control` stream the ban is community-wide, suppressing the target in every channel.
 </ParamField>
 
 <ParamField body="BannedDid" type="string" required>
@@ -221,20 +251,20 @@ A ban or unban as an appended fact. The winning state per `(channel, target)` is
 </Accordion>
 
 <Accordion title="ModeratorGranted">
-A moderator grant or revocation. Only events authored by the channel owner count — there are no transitive grants. The winning state per `(channel, grantee)` is the event with the highest `(Timestamp, EventId)` among owner-authored events.
+A moderator grant or revocation. Moderators are **server-wide**: only events authored by the server owner (the creator of the `server-control` channel) on the `server-control` stream count — there are no transitive grants, no per-channel moderators, and grant events on ordinary channel streams are inert. The winning state per grantee is the event with the highest `(Timestamp, EventId)` among qualifying events.
 
-**Stream:** Channel stream — `Kind = Encrypted`
+**Stream:** `server-control` channel stream — `Kind = Mls`
 
 <ParamField body="ChannelId" type="string (UUID)" required>
-  The channel in which the moderation privilege is being granted or revoked.
+  Must be the `server-control` channel id for the grant to count; any other value renders the event inert.
 </ParamField>
 
 <ParamField body="GranteeDid" type="string" required>
-  The DID of the member receiving or losing the moderator role.
+  The DID of the member receiving or losing the server-wide moderator role.
 </ParamField>
 
 <ParamField body="Revoked" type="boolean">
-  `false` (or absent) — the grant is active. `true` — the grant is revoked. The latest owner-authored event per `(ChannelId, GranteeDid)` wins.
+  `false` (or absent) — the grant is active. `true` — the grant is revoked. The latest server-owner–authored event per grantee wins.
 </ParamField>
 </Accordion>
 
@@ -281,7 +311,9 @@ When multiple events compete to define the same logical state (concurrent edits,
 | Concurrent edits to the same message | `(ChannelId, TargetMessageId)` | Highest `(Timestamp, EventId)` |
 | Concurrent reactions per (message, author, emoji) | `(TargetMessageId, AuthorDid, Emoji)` | Highest `(Timestamp, EventId)` |
 | Concurrent ban/unban for the same member | `(ChannelId, BannedDid)` | Highest `(Timestamp, EventId)` among authority-holding authors |
-| Concurrent moderator grant/revoke | `(ChannelId, GranteeDid)` | Highest `(Timestamp, EventId)` among owner-authored events |
+| Concurrent moderator grant/revoke | `GranteeDid` (on `server-control`) | Highest `(Timestamp, EventId)` among server-owner–authored events |
+| Concurrent channel renames | `ChannelId` | Highest `(Timestamp, EventId)` among moderator-authored events |
+| Concurrent deactivate/reactivate | `ChannelId` | Highest `(Timestamp, EventId)` among moderator-authored events |
 | Concurrent device authorize/revoke | `(RootDid, DeviceDid)` | Highest `(Timestamp, EventId)` |
 
 <Warning>
