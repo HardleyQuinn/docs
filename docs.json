@@ -34,6 +34,7 @@
             "group": "Self-Hosting",
             "pages": [
               "self-hosting/relay",
+              "self-hosting/cloudflare-tunnel",
               "self-hosting/vault",
               "self-hosting/configuration"
             ]

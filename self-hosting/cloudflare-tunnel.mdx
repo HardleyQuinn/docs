@@ -1,0 +1,116 @@
+---
+title: "Expose Your Relay with Cloudflare Tunnel"
+sidebarTitle: "Cloudflare Tunnel"
+description: "Publish a home-hosted EvilChat relay through your own domain with Cloudflare Tunnel — no port forwarding, no inbound firewall holes, and your IP address never appears in DNS."
+---
+
+A relay is a good fit for hosting at home: it is a single lightweight process with a SQLite file, and clients talk to it over plain HTTP (`GET /info`, `GET /descriptor`, `POST /events`, `GET /events?since=`) — no websockets, no long-lived connections. The catch with home hosting is exposure: a DNS `A` record pointing at your house publishes your IP address to the world, and an open router port invites scanning.
+
+**Cloudflare Tunnel** solves both. A small agent (`cloudflared`) on your machine opens an *outbound* connection to Cloudflare's edge; your hostname resolves to Cloudflare, and Cloudflare hands requests down the tunnel. Nothing inbound ever reaches your network directly:
+
+- Your IP appears nowhere in DNS — the hostname is a CNAME to the tunnel.
+- Your router forwards no ports and your firewall keeps all inbound closed.
+- The relay itself listens only on `localhost`, unreachable even from your LAN.
+
+This guide assumes Windows, but everything except the service commands is identical on Linux and macOS.
+
+## 1. Run the relay bound to localhost
+
+Publish and initialize the relay (see the [relay guide](/self-hosting/relay) for the full configuration reference):
+
+```powershell
+dotnet publish EvilChat.Relay -c Release -o C:\evilrelay
+cd C:\evilrelay
+.\EvilChat.Relay.exe init --owner did:evil:YOUR-ROOT-DID --name "my relay"
+```
+
+`init --owner` pins your root DID as the relay owner and mints the relay's own Ed25519 identity — what it signs its `/descriptor` with.
+
+Then run it on `localhost` only, with real admission parameters — never expose a public relay with the dev pass-through defaults:
+
+```powershell
+$env:ASPNETCORE_URLS = "http://localhost:5100"
+$env:EvilChat__Relay__PowBits = "12"
+$env:EvilChat__Relay__RetentionSeconds = "1209600"   # 14 days; the vault is the permanent store
+.\EvilChat.Relay.exe
+```
+
+To survive reboots, wrap it as a Windows service (`sc.exe create`, or [NSSM](https://nssm.cc) if you want stdout logging and auto-restart) or a Task Scheduler job set to run at startup whether or not you are logged in.
+
+<Note>
+  Binding to `localhost` is part of the security model: the only path to the relay is through the tunnel. Do not bind `0.0.0.0` "just in case" — that reopens the direct-scan surface the tunnel exists to remove.
+</Note>
+
+## 2. Create the tunnel
+
+<Steps>
+  <Step title="Install cloudflared">
+    ```powershell
+    winget install Cloudflare.cloudflared
+    ```
+  </Step>
+
+  <Step title="Create a tunnel in the dashboard">
+    In the Cloudflare dashboard, go to **Zero Trust → Networks → Tunnels → Create a tunnel**, name it (e.g. `evil-relay`), and copy the one-line install command it shows you:
+
+    ```powershell
+    cloudflared service install <token>
+    ```
+
+    This registers `cloudflared` as a Windows service, so the tunnel reconnects on its own after reboots.
+  </Step>
+
+  <Step title="Map your hostname to the relay">
+    In the tunnel's **Public Hostname** tab, add:
+
+    | Field | Value |
+    |---|---|
+    | Subdomain | `relay` |
+    | Domain | `yourdomain.com` |
+    | Service | `http://localhost:5100` |
+
+    Cloudflare creates the DNS record automatically — a CNAME to the tunnel, not an `A` record. There is no IP to leak.
+  </Step>
+
+  <Step title="Verify from outside">
+    ```bash
+    curl -s https://relay.yourdomain.com/info
+    ```
+
+    You should see the same parameters JSON the relay serves locally. TLS is terminated at Cloudflare's edge; the hop from `cloudflared` to `localhost:5100` never leaves your machine.
+  </Step>
+</Steps>
+
+## 3. Keep your IP out of the zone
+
+The tunnel protects this hostname, but your IP is only as hidden as the *rest* of your DNS zone:
+
+- **Use a fresh subdomain.** DNS-history services archive old records forever. If `relay.yourdomain.com` ever pointed at your house directly, that leak already happened — pick a name that never has.
+- **Audit every record on the domain.** One unproxied (grey-cloud) `A` record pointing home — a game server, a webcam, an old experiment — undoes everything.
+- **Don't co-host identity leaks.** Services on the same machine that self-report their address (torrent clients, some game hosts) can tie your domain to your IP out of band.
+
+## Why the relay behaves well behind a tunnel
+
+- **Rate limiting is per-DID, not per-IP.** Behind a tunnel every request reaches Kestrel from localhost, which would blind an IP-based limiter; the EVIL relay's token bucket keys on `AuthorDid` and keeps working unchanged. Sealed envelopes never had per-DID limits — their higher PoW tier does the work, tunnel or not.
+- **Envelopes are tiny.** The 64 KiB envelope cap is far below Cloudflare's request-body limit on every plan, including free.
+- **Sync stays live.** Cloudflare does not cache JSON API responses by default, so `GET /events?since=` always reflects the current offset. If you add Cache Rules for other reasons, exclude `/events`.
+
+## Point clients at it
+
+```json
+{
+  "EvilChat": {
+    "Relay": {
+      "BaseUrl": "https://relay.yourdomain.com"
+    }
+  }
+}
+```
+
+Clients fetch `/info` to learn your PoW difficulty and envelope limits, and `/descriptor` to verify the relay's signed identity.
+
+## What Cloudflare can see — stated plainly
+
+Cloudflare terminates TLS at its edge, so **Cloudflare sees exactly what your relay sees**: opaque encrypted envelopes, plus the write-side metadata that standard envelopes expose — `AuthorDid`, `StreamId`, timing, frequency, and sizes. It never sees message content (nothing between clients was ever plaintext to the relay), and [sealed mode](/security/sealed-mode) hides sender identity and channel linkage from Cloudflare exactly as it does from the relay.
+
+But be honest about the trade: EvilChat's design already concedes that the relay operator sees the standard-envelope write-side graph. Putting Cloudflare in front means that party is now *Cloudflare and you*, not just you. If that matters to your threat model, the alternatives are exposing a rented VPS's IP instead of your home's (moving trust from Cloudflare to the VPS provider) — or leaning harder on sealed channels, which were built for precisely this.
