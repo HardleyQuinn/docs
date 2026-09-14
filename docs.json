@@ -33,6 +33,7 @@
           {
             "group": "Self-Hosting",
             "pages": [
+              "self-hosting/local-install",
               "self-hosting/relay",
               "self-hosting/cloudflare-tunnel",
               "self-hosting/vault",

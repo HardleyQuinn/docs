@@ -1,0 +1,279 @@
+---
+title: "Install the EvilChat Stack on One Machine"
+sidebarTitle: "Local install"
+description: "Publish the relay, evilvault, and the client from source and run all three as ordinary processes on a single machine — no Aspire orchestration and no IDE."
+---
+
+The Aspire AppHost is a development harness: it compiles on every launch, invents four throwaway identities, and tears the world down when you stop debugging. This page does the opposite. You publish each component once, give it a durable data directory, and start it like any other program — the arrangement you want for a real test environment, a home server, or a machine you actually keep messages on.
+
+The three components stay independent processes. They only find each other through URLs you supply, so anything below can later move to a different host without changing how it is configured.
+
+<Note>
+  There are no prebuilt EvilChat downloads today. The `evilvault` packaging exists (a Homebrew formula and a winget manifest live in `packaging/`), but no release has been published for them to point at, and the relay and client have no packaging at all. Every component is built from source here.
+</Note>
+
+## What you will end up with
+
+| Component | Binary | Default port | Role |
+|---|---|---|---|
+| Relay | `EvilChat.Relay` | 5100 | The dumb pipe. Accepts envelopes, assigns offsets, serves bulk sync. |
+| Vault | `evilvault` | 5200 | Your personal archive. Holds Storage-Key-encrypted plaintext. |
+| Client | `EvilChat.Web` | 5101 | The Blazor server head. This is the app you open in a browser. |
+
+## Prerequisites
+
+- **.NET 10 SDK** — the runtime alone is not enough, because you build from source. Install from [dot.net](https://dot.net).
+- **Rust toolchain** — via [rustup](https://rustup.rs). The client will not start without the `evil-mls` core.
+- A clone of the EvilChat repository.
+
+## Build and publish
+
+<Steps>
+  <Step title="Build the native MLS core">
+    All group and DM encryption runs through `evil-mls`. There is no managed fallback, and the client refuses to start without it.
+
+    ```bash
+    cargo build --release --manifest-path rust/evil-mls/Cargo.toml
+    ```
+
+    The .NET build copies the resulting library into the client's output and on into the published folder, under whichever name cargo produced for your platform — `evil_mls.dll`, `libevil_mls.dylib`, or `libevil_mls.so`.
+  </Step>
+
+  <Step title="Publish the three components">
+    Publish each project into its own folder under a directory you intend to keep. These are framework-dependent builds, so the .NET 10 runtime must remain installed on the machine.
+
+    <Tabs>
+      <Tab title="Windows (PowerShell)">
+        ```powershell
+        $install = "$env:LOCALAPPDATA\EvilChat"
+
+        dotnet publish EvilChat.Relay -c Release -o "$install\relay"
+        dotnet publish EvilChat.Vault -c Release -o "$install\vault"
+        dotnet publish EvilChat.Web   -c Release -o "$install\client"
+        ```
+      </Tab>
+      <Tab title="macOS / Linux">
+        ```bash
+        INSTALL="$HOME/.local/share/evilchat"
+
+        dotnet publish EvilChat.Relay -c Release -o "$INSTALL/relay"
+        dotnet publish EvilChat.Vault -c Release -o "$INSTALL/vault"
+        dotnet publish EvilChat.Web   -c Release -o "$INSTALL/client"
+        ```
+      </Tab>
+    </Tabs>
+
+    Each folder is self-describing: `relay/EvilChat.Relay`, `vault/evilvault`, and `client/EvilChat.Web` are the executables (add `.exe` on Windows).
+  </Step>
+
+  <Step title="Confirm the native core was carried along">
+    The client is the only component that needs it, and a missing core is the single most common reason a fresh install comes up with no channels.
+
+    ```bash
+    ls "$INSTALL/client" | grep evil_mls
+    ```
+
+    If nothing matches, the cargo build in step one did not run or did not succeed. Fix that before going further — the client will otherwise start, announce nothing, and show an empty channel list.
+  </Step>
+</Steps>
+
+<Warning>
+  Keep your data directories outside the publish folders. Re-publishing overwrites its output directory, and a data directory nested inside it would go with it — taking your identity seed and message history along.
+</Warning>
+
+## Start the relay
+
+The relay needs two directories: one for its identity and operator config, one for the envelope database. `EVILRELAY_HOME` sets the first; `EvilChat__Relay__DbPath` sets the second.
+
+<Tabs>
+  <Tab title="Windows (PowerShell)">
+    ```powershell
+    $data = "$env:LOCALAPPDATA\EvilChat\data"
+    $env:EVILRELAY_HOME = "$data\relay"
+    $env:EvilChat__Relay__DbPath = "$data\relay\relay.db"
+    $env:ASPNETCORE_URLS = "http://localhost:5100"
+
+    & "$env:LOCALAPPDATA\EvilChat\relay\EvilChat.Relay.exe"
+    ```
+  </Tab>
+  <Tab title="macOS / Linux">
+    ```bash
+    DATA="$HOME/.local/share/evilchat/data"
+    export EVILRELAY_HOME="$DATA/relay"
+    export EvilChat__Relay__DbPath="$DATA/relay/relay.db"
+    export ASPNETCORE_URLS="http://localhost:5100"
+
+    "$HOME/.local/share/evilchat/relay/EvilChat.Relay"
+    ```
+  </Tab>
+</Tabs>
+
+A relay that has never been initialized mints its own Ed25519 identity on first launch and writes it to `config.json` in `EVILRELAY_HOME`. It comes up **unowned**, which is a working state — it relays envelopes normally and simply has no admin surface. Confirm it:
+
+```bash
+curl -s http://localhost:5100/info | jq
+```
+
+You should see a `did` for the relay and `"ownerDid": null`.
+
+<Note>
+  `/health` is only mapped when `ASPNETCORE_ENVIRONMENT` is `Development`. A published relay runs in Production by default, so use `/info` as your liveness check.
+</Note>
+
+Proof-of-work is **off by default** (`PowBits: 0`). The dev AppHost sets it to 10, so a self-hosted relay is more permissive than the one you saw while debugging. See [Relay configuration](/self-hosting/relay) for PoW and rate-limit tuning before exposing it to anyone else.
+
+## Start the vault
+
+The vault keeps its config in `EVILVAULT_HOME` and prints a pairing token during `init`. You need that token in the next step.
+
+<Tabs>
+  <Tab title="Windows (PowerShell)">
+    ```powershell
+    $env:EVILVAULT_HOME = "$env:LOCALAPPDATA\EvilChat\data\vault"
+
+    & "$env:LOCALAPPDATA\EvilChat\vault\evilvault.exe" init --port 5200
+    & "$env:LOCALAPPDATA\EvilChat\vault\evilvault.exe" run
+    ```
+  </Tab>
+  <Tab title="macOS / Linux">
+    ```bash
+    export EVILVAULT_HOME="$HOME/.local/share/evilchat/data/vault"
+
+    "$HOME/.local/share/evilchat/vault/evilvault" init --port 5200
+    "$HOME/.local/share/evilchat/vault/evilvault" run
+    ```
+  </Tab>
+</Tabs>
+
+`init` prints the config path, the data directory, the URL, and the token:
+
+```
+vault initialized.
+
+  config : .../vault/config.json
+  data   : .../vault/data
+  url    : http://localhost:5200
+  token  : 0000000000000000000000000000000000000000000000aa
+
+paste url + token into EvilChat (Settings → Vault), then: evilvault run
+```
+
+Copy the token. From another shell, `evilvault status` confirms the daemon is up and reports how many events it has archived. The vault is optional — skip this section entirely and the client archives locally only.
+
+## Start the client
+
+The client is configured entirely through environment variables. It has no interactive setup: the first launch mints the identity and writes it to the profile directory.
+
+<Tabs>
+  <Tab title="Windows (PowerShell)">
+    ```powershell
+    $env:ASPNETCORE_URLS = "http://localhost:5101"
+    $env:EvilChat__Profile__UserName = "quinn"
+    $env:EvilChat__Profile__DataDir  = "$env:LOCALAPPDATA\EvilChat\data\quinn"
+    $env:EvilChat__Relay__BaseUrl    = "http://localhost:5100"
+    $env:EvilChat__Vault__BaseUrl    = "http://localhost:5200"
+    $env:EvilChat__Vault__Token      = "<token from evilvault init>"
+    $env:EvilChat__Bootstrap__IsChannelOwner = "true"
+
+    & "$env:LOCALAPPDATA\EvilChat\client\EvilChat.Web.exe"
+    ```
+  </Tab>
+  <Tab title="macOS / Linux">
+    ```bash
+    export ASPNETCORE_URLS="http://localhost:5101"
+    export EvilChat__Profile__UserName="quinn"
+    export EvilChat__Profile__DataDir="$HOME/.local/share/evilchat/data/quinn"
+    export EvilChat__Relay__BaseUrl="http://localhost:5100"
+    export EvilChat__Vault__BaseUrl="http://localhost:5200"
+    export EvilChat__Vault__Token="<token from evilvault init>"
+    export EvilChat__Bootstrap__IsChannelOwner="true"
+
+    "$HOME/.local/share/evilchat/client/EvilChat.Web"
+    ```
+  </Tab>
+</Tabs>
+
+Open `http://localhost:5101`. On a fresh profile the client mints its identity, authorizes its own device, publishes an MLS KeyPackage, and — because `IsChannelOwner` is set — creates `#general` and the hidden server-control channel. The browser lands on `#general`.
+
+<Warning>
+  `IsChannelOwner` is what makes an instance the **server owner**: it creates the server-control channel, and bans and moderator grants made from that instance apply community-wide. Set it on exactly one profile, the first one you start. There is no way to create the control channel from the UI today, and no way to transfer ownership afterward — a second owner would mean a second, competing moderation authority.
+</Warning>
+
+Verify the whole chain:
+
+```bash
+# envelopes reached the relay
+curl -s 'http://localhost:5100/events?since=0&limit=500' | jq '.events | length'
+
+# and the vault archived them
+evilvault status
+```
+
+Additional users are additional client processes: a different port, a different `DataDir`, a different `UserName`, and `IsChannelOwner` left unset. They share the relay, and each needs its own vault or none at all.
+
+## Claim relay ownership
+
+Ownership pins a DID that may change relay settings through the signed `/admin/config` endpoint, which unlocks the owner settings page in the client. It is optional, and an unowned relay stays fully functional without it.
+
+The awkward part is getting your DID: **no screen in the client displays it today**. Because device-authorization envelopes are the sanctioned signed-plaintext exception, you can read it back off your own relay instead.
+
+<Tabs>
+  <Tab title="Windows (PowerShell)">
+    ```powershell
+    $r = Invoke-RestMethod "http://localhost:5100/events?since=0&limit=200"
+    $r.events.envelope | Where-Object { $_.kind -eq 'Identity' } | ForEach-Object {
+      $p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.payload)) | ConvertFrom-Json
+      if ($p.'$type' -eq 'DeviceAuthorized') { $p.authorDid }
+    } | Select-Object -Unique
+    ```
+  </Tab>
+  <Tab title="macOS / Linux">
+    ```bash
+    curl -s 'http://localhost:5100/events?since=0&limit=200' \
+      | jq -r '.events[].envelope | select(.kind=="Identity") | .payload' \
+      | while read -r p; do
+          echo "$p" | base64 -d | jq -r 'select(."$type"=="DeviceAuthorized") | .authorDid'
+        done | sort -u
+    ```
+  </Tab>
+</Tabs>
+
+Do this right after the first client launch, while yours is the only identity on the relay — otherwise the command lists every member's root DID with nothing to distinguish yours. Then pin it and restart the relay:
+
+```bash
+EvilChat.Relay config set owner did:evil:0000000000000000000000000000000000000000000
+EvilChat.Relay config get
+```
+
+The same `config set` accepts `name`, `description`, `index`, `bootstrap`, and `url`. Run `EvilChat.Relay did` to print the relay's own DID.
+
+<Note>
+  The relay's CLI help text calls the binary `evilrelay`, but no binary by that name is produced today — the published executable is `EvilChat.Relay`. Rename it or add a shell alias if the shorter name matters to you.
+</Note>
+
+## Things that will surprise you
+
+**The relay URL is recorded once.** `EvilChat:Relay:BaseUrl` seeds the client's relay registry only when that registry is empty — that is, on the profile's very first launch. Afterwards the stored row wins and changing the environment variable does nothing. To move an existing profile to a different relay, use **Settings → Servers** in the client.
+
+**Your profile directory is the account.** `profile.json` holds the root signing seed in plaintext, and `mls.state` holds live MLS group state. Losing the directory loses the identity; copying it elsewhere clones it. There is no recovery phrase and no second-device pairing flow yet, so back it up like a private key — because it is one.
+
+**Relay history is not a backup.** With `RetentionSeconds` set, the relay deletes envelopes on a rolling TTL, and nothing re-fetches them. The vault is the durable copy.
+
+**Nothing here installs a service.** No systemd unit, launchd plist, or Windows service ships with any component. The processes run in whatever shell you start them from. Wire them into your platform's service manager yourself — [the vault CLI page](/api/vault-cli) shows a systemd unit for `evilvault` that adapts cleanly to the other two.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Relay configuration" icon="server" href="/self-hosting/relay">
+    Tune proof-of-work, rate limits, and retention before anyone else connects.
+  </Card>
+  <Card title="Expose it publicly" icon="cloud" href="/self-hosting/cloudflare-tunnel">
+    Reach your relay from outside the machine without opening a port.
+  </Card>
+  <Card title="Vault details" icon="database" href="/self-hosting/vault">
+    Archiving, hydration, and token rotation.
+  </Card>
+  <Card title="Full settings reference" icon="sliders" href="/self-hosting/configuration">
+    Every relay, client, and vault key with its default.
+  </Card>
+</CardGroup>
